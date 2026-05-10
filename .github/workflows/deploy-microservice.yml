@@ -3,17 +3,22 @@ name: Deploy Microservice (Reusable)
 # Reusable workflow para deploy de cualquier ms-*-api a Cloud Run.
 #
 # Diseno production-grade:
-#   - WIF auth via gh-actions-${env} (sin SA JSON keys)
-#   - Image naming homologo a build-image.sh (MS_IMAGE_SUFFIX from env)
-#   - Migrate job recibe el SAME image vio render --job + jobs replace
-#     ANTES de execute (sino correria con imagen vieja sin migrations)
-#   - Rollback automatico si smoke /health falla post-deploy
-#   - Concurrency lock per (service, env) para evitar races en pushes
-#     concurrentes
-#   - Actions pinned a SHA explicito (anti supply-chain)
-#   - Logs verbose con identifiers resueltos para auditoria
+#   - WIF auth via gh-actions-${env} (sin SA JSON keys).
+#   - Image naming homologo a build-image.sh (MS_IMAGE_SUFFIX from env).
+#   - Step ordering safety-first:
+#       1. Build + push image (idempotent: skip si ya esta en AR).
+#       2. Render Service + Job YAMLs.
+#       3. Migrate job replace + execute (con NUEVA imagen, antes del
+#          service deploy). Si migrate falla, service queda intacto.
+#       4. Capture revision previa (justo antes de mutar el service).
+#       5. Deploy service replace.
+#       6. Smoke /health con retry loop.
+#       7. Rollback automatico si deploy succeded pero smoke fallo.
+#   - Concurrency lock per (service, env) - dos pushes a main no pisan.
+#   - Actions pinned a SHA explicito (anti supply-chain).
+#   - Logs verbose con identifiers resueltos para auditoria.
 #
-# Caller espera (.github/workflows/deploy-beta.yml) llama con:
+# Caller espera (.github/workflows/deploy-beta.yml):
 #   uses: Viverent/vr-devops/.github/workflows/deploy-microservice.yml@main
 #   with:
 #     service_name: ms-sales-api
@@ -68,12 +73,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # ── Setup ────────────────────────────────────────────────────────
+
       # Step 1: caller repo (Dockerfile + source code).
       - name: Checkout caller repo
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       # Step 2: vr-devops (templates + render-cloudrun.sh + env files).
-      # ref: main asume que vr-devops branch main tiene HEAD valido.
+      # ref: main asume que vr-devops branch main tiene HEAD valido en remote.
       - name: Checkout vr-devops
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
@@ -83,16 +90,24 @@ jobs:
 
       # Step 3: Resolve env-specific identifiers leyendo el env file
       # de vr-devops (single source of truth con orchestrator).
+      # Usamos ENV_TARGET local-only para no colisionar con el `export
+      # ENV` que el env file inyecta al sourcear.
       - name: Resolve env config
         id: cfg
         run: |
           set -euo pipefail
-          ENV="${{ inputs.env }}"
+          ENV_TARGET="${{ inputs.env }}"
           SLUG="${{ inputs.image_name }}"
 
-          # Source env file para acceso a MS_IMAGE_SUFFIX, SVC_SUFFIX, etc.
+          if [ ! -f "vr-devops/infra/env/${ENV_TARGET}.env" ]; then
+            echo "::error::Env file vr-devops/infra/env/${ENV_TARGET}.env not found"
+            exit 1
+          fi
+
+          # Source env file: export ENV, PROJECT_ID, PROJECT_NUMBER,
+          # SVC_SUFFIX, MS_IMAGE_SUFFIX, IMAGE_BASE, AR_REPO, etc.
           # shellcheck disable=SC1090
-          source "vr-devops/infra/env/${ENV}.env"
+          source "vr-devops/infra/env/${ENV_TARGET}.env"
 
           GIT_SHA=$(git rev-parse --short=7 HEAD)
 
@@ -110,12 +125,15 @@ jobs:
           JOB_NAME="ms-${SLUG}-migrate${SVC_SUFFIX}"
 
           # WIF SA email per env (S08 setup).
-          if [ "$ENV" = "prod" ]; then
+          if [ "$ENV_TARGET" = "prod" ]; then
             SA_EMAIL="gh-actions-prod@vr-portal-fb.iam.gserviceaccount.com"
             POOL_PROJ_NUM="126856503055"
-          else
+          elif [ "$ENV_TARGET" = "beta" ]; then
             SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
             POOL_PROJ_NUM="214382208885"
+          else
+            echo "::error::Unsupported env: $ENV_TARGET (only beta|prod)"
+            exit 1
           fi
 
           {
@@ -133,7 +151,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           echo "::notice::Resolved deploy config:"
-          echo "  env=$ENV"
+          echo "  env=$ENV_TARGET"
           echo "  project=$PROJECT_ID ($PROJECT_NUMBER)"
           echo "  service=$FULL_SVC"
           echo "  image=$IMAGE_TAG"
@@ -157,10 +175,125 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      # Step 6: Capture revision PREVIA para rollback en caso de smoke fail.
-      # Si es primer deploy del servicio, no hay revision previa; el step
-      # Rollback skippeara silencioso.
-      - name: Capture previous revision for rollback
+      # ── Build + Render (sin mutar Cloud Run todavia) ─────────────────
+
+      # Step 6: Build + push image. Tag = sha-<git_sha> para
+      # build-once-deploy-many. Plataforma linux/amd64 fija (Cloud Run
+      # gen2 amd64-only). Idempotente: si tag ya en AR, skip.
+      - name: Build and push Docker image
+        id: build
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${{ steps.cfg.outputs.image_tag }}"
+
+          if gcloud artifacts docker images describe "$IMAGE_TAG" \
+              --project="${{ steps.cfg.outputs.project_id }}" \
+              --quiet >/dev/null 2>&1; then
+            echo "::notice::Image $IMAGE_TAG already in AR, skip rebuild"
+          else
+            echo "::notice::Building $IMAGE_TAG (linux/amd64)"
+            docker build --platform=linux/amd64 -t "$IMAGE_TAG" .
+            docker push "$IMAGE_TAG"
+          fi
+
+          # render-cloudrun.sh espera /tmp/last-image-${SLUG}-${ENV}.txt
+          mkdir -p /tmp
+          echo "$IMAGE_TAG" > "/tmp/last-image-${{ inputs.image_name }}-${{ inputs.env }}.txt"
+
+      # Step 7: Render Service YAML (subgraph.template.yaml).
+      - name: Render Cloud Run Service YAML
+        id: render-service
+        run: |
+          set -euo pipefail
+          cd vr-devops
+          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "${{ inputs.image_name }}"
+          OUT="/tmp/cloudrun-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
+          echo "::group::Rendered Service YAML"
+          cat "$OUT"
+          echo "::endgroup::"
+
+      # Step 8: Render Job YAML (job.template.yaml). Skip si mode=never.
+      - name: Render Cloud Run Job YAML (migrate)
+        id: render-job
+        if: inputs.migrate_mode != 'never'
+        run: |
+          set -euo pipefail
+          cd vr-devops
+          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "${{ inputs.image_name }}" --job
+          OUT="/tmp/cloudjob-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
+          echo "::group::Rendered Job YAML"
+          cat "$OUT"
+          echo "::endgroup::"
+
+      # ── Apply: migrate first, then service, then validate ──────────
+
+      # Step 9: Migrate job replace + execute (BEFORE service deploy).
+      # Razon: si migrate falla, el service queda en su revision actual
+      # con el schema que esperaba; no entra codigo nuevo a un schema
+      # potencialmente roto. Las migrations alembic son forward-only
+      # additive (per S03 conventions), por lo que ejecutarlas antes
+      # del deploy garantiza que la nueva revision tenga schema listo.
+      - name: Migrate job replace + execute (mode=${{ inputs.migrate_mode }})
+        id: migrate
+        timeout-minutes: ${{ inputs.migrate_timeout_minutes }}
+        run: |
+          set -euo pipefail
+          JOB="${{ steps.cfg.outputs.job_name }}"
+          PROJECT="${{ steps.cfg.outputs.project_id }}"
+          MODE="${{ inputs.migrate_mode }}"
+          YAML="/tmp/cloudjob-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
+
+          EXISTS=false
+          if gcloud run jobs describe "$JOB" \
+              --region=us-central1 --project="$PROJECT" &>/dev/null; then
+            EXISTS=true
+          fi
+
+          run_migrate() {
+            if [ ! -f "$YAML" ]; then
+              echo "::error::Migrate YAML missing at $YAML (render-job step skipped?)"
+              exit 1
+            fi
+            echo "::notice::Updating job $JOB image via render YAML"
+            gcloud run jobs replace "$YAML" \
+              --region=us-central1 --project="$PROJECT" --quiet
+            echo "::notice::Executing migrate job $JOB (sync wait)"
+            gcloud run jobs execute "$JOB" \
+              --region=us-central1 --project="$PROJECT" --wait
+          }
+
+          case "$MODE" in
+            auto)
+              if $EXISTS; then
+                echo "::notice::Migrate job $JOB exists, mode=auto -> running"
+                run_migrate
+              else
+                echo "::notice::Migrate job $JOB does not exist, mode=auto -> skip"
+              fi
+              ;;
+            always)
+              if ! $EXISTS; then
+                echo "::error::Migrate job $JOB declared required (mode=always) but does not exist in $PROJECT"
+                exit 1
+              fi
+              echo "::notice::Migrate job $JOB executing (mode=always)"
+              run_migrate
+              ;;
+            never)
+              echo "::notice::Migrate explicitly disabled (mode=never)"
+              ;;
+            *)
+              echo "::error::Invalid migrate_mode: $MODE (expected auto|always|never)"
+              exit 1
+              ;;
+          esac
+
+      # Step 10: Capture revision previa para rollback. Se hace JUSTO
+      # antes del deploy del service para que el snapshot represente lo
+      # que hay realmente corriendo en runtime al momento de la mutacion.
+      # Si es primer deploy del service, no hay revision previa - el
+      # step Rollback skippeara silencioso (rev string vacio).
+      - name: Capture previous service revision (for rollback)
         id: prev_rev
         run: |
           set -euo pipefail
@@ -177,44 +310,10 @@ jobs:
             echo "::notice::Previous ready revision captured for rollback: $PREV"
           fi
 
-      # Step 7: Build + push image. Tag = sha-<git_sha> para
-      # build-once-deploy-many. Plataforma linux/amd64 fija (Cloud Run
-      # gen2 amd64-only).
-      - name: Build and push Docker image
-        run: |
-          set -euo pipefail
-          IMAGE_TAG="${{ steps.cfg.outputs.image_tag }}"
-
-          # Idempotencia: si la imagen ya existe en AR (re-run del mismo
-          # commit), skip rebuild. Mismo comportamiento que build-image.sh.
-          if gcloud artifacts docker images describe "$IMAGE_TAG" \
-              --project="${{ steps.cfg.outputs.project_id }}" \
-              --quiet >/dev/null 2>&1; then
-            echo "::notice::Image $IMAGE_TAG already in AR, skip rebuild"
-          else
-            echo "::notice::Building $IMAGE_TAG (linux/amd64)"
-            docker build --platform=linux/amd64 -t "$IMAGE_TAG" .
-            docker push "$IMAGE_TAG"
-          fi
-
-          # render-cloudrun.sh espera /tmp/last-image-${SLUG}-${ENV}.txt
-          mkdir -p /tmp
-          echo "$IMAGE_TAG" > "/tmp/last-image-${{ inputs.image_name }}-${{ inputs.env }}.txt"
-
-      # Step 8: Render Service YAML (subgraph.template.yaml).
-      - name: Render Cloud Run Service YAML
-        run: |
-          set -euo pipefail
-          cd vr-devops
-          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "${{ inputs.image_name }}"
-          OUT="/tmp/cloudrun-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
-          echo "::group::Rendered Service YAML"
-          cat "$OUT"
-          echo "::endgroup::"
-
-      # Step 9: Deploy Cloud Run service. Cloud Run mantiene revisiones
-      # previas (no las borra) — habilitando rollback en step 13.
+      # Step 11: Deploy Cloud Run service. Cloud Run mantiene revisiones
+      # previas en historial (no las borra) - habilitando rollback.
       - name: Deploy Cloud Run service
+        id: deploy
         run: |
           set -euo pipefail
           gcloud run services replace \
@@ -222,78 +321,10 @@ jobs:
             --region=us-central1 \
             --project="${{ steps.cfg.outputs.project_id }}"
 
-      # Step 10: Render Job YAML (job.template.yaml). Solo si migrate
-      # va a correr en este run (mode != never).
-      - name: Render Cloud Run Job YAML (migrate)
-        if: inputs.migrate_mode != 'never'
-        run: |
-          set -euo pipefail
-          cd vr-devops
-          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "${{ inputs.image_name }}" --job
-          OUT="/tmp/cloudjob-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
-          echo "::group::Rendered Job YAML"
-          cat "$OUT"
-          echo "::endgroup::"
-
-      # Step 11: Update + execute migrate job (3 modos: auto | always | never).
-      # Pattern de orchestrator deploy.sh:
-      #   1. jobs replace (UPDATE image to new sha)
-      #   2. jobs execute --wait
-      # Solo replace si el modo lo requiere.
-      - name: Migrate job replace + execute (mode=${{ inputs.migrate_mode }})
-        timeout-minutes: ${{ inputs.migrate_timeout_minutes }}
-        run: |
-          set -euo pipefail
-          JOB="${{ steps.cfg.outputs.job_name }}"
-          PROJECT="${{ steps.cfg.outputs.project_id }}"
-          MODE="${{ inputs.migrate_mode }}"
-
-          EXISTS=false
-          if gcloud run jobs describe "$JOB" \
-              --region=us-central1 --project="$PROJECT" &>/dev/null; then
-            EXISTS=true
-          fi
-
-          run_migrate() {
-            local job="$1"
-            local proj="$2"
-            local yaml="/tmp/cloudjob-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
-            echo "::notice::Updating job $job image via render YAML"
-            gcloud run jobs replace "$yaml" \
-              --region=us-central1 --project="$proj" --quiet
-            echo "::notice::Executing migrate job $job (sync wait)"
-            gcloud run jobs execute "$job" \
-              --region=us-central1 --project="$proj" --wait
-          }
-
-          case "$MODE" in
-            auto)
-              if $EXISTS; then
-                echo "::notice::Migrate job $JOB exists, mode=auto -> running"
-                run_migrate "$JOB" "$PROJECT"
-              else
-                echo "::notice::Migrate job $JOB does not exist, mode=auto -> skip"
-              fi
-              ;;
-            always)
-              if ! $EXISTS; then
-                echo "::error::Migrate job $JOB declared required (mode=always) but does not exist in $PROJECT"
-                exit 1
-              fi
-              echo "::notice::Migrate job $JOB executing (mode=always)"
-              run_migrate "$JOB" "$PROJECT"
-              ;;
-            never)
-              echo "::notice::Migrate explicitly disabled (mode=never)"
-              ;;
-            *)
-              echo "::error::Invalid migrate_mode: $MODE (expected auto|always|never)"
-              exit 1
-              ;;
-          esac
-
       # Step 12: Smoke /health con retry loop. curl -f valida 200; el
       # status code es suficiente, no hace falta inspeccionar body.
+      # Total time worst-case: MAX_TRIES * (curl_max_time + sleep) =
+      # 12 * (5 + 5) = 120s para smoke_timeout_seconds=60.
       - name: Smoke /health
         id: smoke
         run: |
@@ -325,17 +356,17 @@ jobs:
           echo "::error::Smoke /health failed after ${{ inputs.smoke_timeout_seconds }}s"
           exit 1
 
-      # Step 13: Rollback si smoke fallo. Solo corre si:
-      #   - smoke step termino con failure
-      #   - habia revision previa capturada (no es primer deploy)
-      # Restaura tráfico 100% a la revision anterior. La revision rota
-      # queda como histórica pero NO recibe tráfico — recuperable manual.
+      # Step 13: Rollback service si deploy succeeded pero smoke fallo.
+      # NO se rolla DB: las migrations son forward-only por convencion
+      # y la revision previa del service es backward-compat con schema
+      # nuevo (additive migrations). La revision rota queda en historial
+      # pero NO recibe trafico - investigar antes de re-deploy.
       - name: Rollback to previous revision (smoke failed)
-        if: failure() && steps.smoke.conclusion == 'failure' && steps.prev_rev.outputs.rev != ''
+        if: failure() && steps.deploy.conclusion == 'success' && steps.smoke.conclusion == 'failure' && steps.prev_rev.outputs.rev != ''
         run: |
           set -euo pipefail
           PREV="${{ steps.prev_rev.outputs.rev }}"
-          echo "::warning::Smoke failed. Rolling back traffic 100% to $PREV"
+          echo "::warning::Smoke failed post-deploy. Rolling back traffic 100% to $PREV"
           gcloud run services update-traffic \
             "${{ steps.cfg.outputs.full_svc }}" \
             --to-revisions="$PREV=100" \
@@ -358,8 +389,10 @@ jobs:
             echo "| Project | ${{ steps.cfg.outputs.project_id }} |"
             echo "| Git SHA | ${{ steps.cfg.outputs.git_sha }} |"
             echo "| Migrate mode | ${{ inputs.migrate_mode }} |"
+            echo "| Migrate result | ${{ steps.migrate.conclusion || 'not-run' }} |"
             echo "| Smoke timeout | ${{ inputs.smoke_timeout_seconds }}s |"
             echo "| Previous rev | ${{ steps.prev_rev.outputs.rev || 'none (first deploy)' }} |"
+            echo "| Deploy result | ${{ steps.deploy.conclusion || 'not-run' }} |"
             echo "| Smoke result | ${{ steps.smoke.conclusion || 'not-run' }} |"
             echo "| Job conclusion | ${{ job.status }} |"
           } >> "$GITHUB_STEP_SUMMARY"

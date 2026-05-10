@@ -143,7 +143,9 @@ jobs:
           ATTACHMENT_BUCKET: ${{ fromJSON(inputs.extra_env).ATTACHMENT_BUCKET || 'test-bucket' }}
           GCS_DOCUMENTS_BUCKET: ${{ fromJSON(inputs.extra_env).GCS_DOCUMENTS_BUCKET || 'test-bucket' }}
           GCP_PROJECT_ID: ${{ fromJSON(inputs.extra_env).GCP_PROJECT_ID || 'local-dev' }}
-          ENV: "test"
+          # ENV: "dev" matchea el Literal de config.py (S03 hardening).
+          # "test" no es valor permitido; usar "dev" para CI.
+          ENV: "dev"
 
       - name: CI summary
         if: always()
