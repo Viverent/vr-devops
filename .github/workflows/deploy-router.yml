@@ -190,12 +190,17 @@ jobs:
           cache-from: type=gha,scope=router-${{ inputs.env }}
           cache-to: type=gha,scope=router-${{ inputs.env }},mode=max
 
+      # auth-validator real en portal-inversionistas-api: el Dockerfile
+      # vive en gateway/Dockerfile con build context en root del repo
+      # (el Dockerfile copia requirements.txt + . desde root del repo).
+      # build-image.sh orchestrator referencia "Dockerfile.auth_validator"
+      # que NO existe en el repo - este workflow usa el path correcto.
       - name: Build + push auth-validator image
         id: build-auth
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          file: Dockerfile.auth_validator
+          file: gateway/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.cfg.outputs.auth_val_image }}
