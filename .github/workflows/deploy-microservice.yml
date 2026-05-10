@@ -392,24 +392,29 @@ jobs:
               --region=us-central1 --project="$PROJECT" \
               --format=json)
 
+            # Ready + ContainerHealthy son la evidencia autoritativa de
+            # deploy exitoso. NO chequeamos 'Active' porque tiene delay
+            # post-services replace (puede estar False varios segundos
+            # mientras Cloud Run propaga traffic al nuevo revision).
+            # Active=False post-rollback ademas es esperado y no indica
+            # falla del deploy original.
             READY=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="Ready") | .status')
             CONTAINER_HEALTHY=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="ContainerHealthy") | .status')
-            ACTIVE=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="Active") | .status')
 
-            if [ "$READY" = "True" ] && [ "$CONTAINER_HEALTHY" = "True" ] && [ "$ACTIVE" = "True" ]; then
-              echo "::notice::Revision $REV health OK (Ready+ContainerHealthy+Active) on attempt $i/$MAX_TRIES"
+            if [ "$READY" = "True" ] && [ "$CONTAINER_HEALTHY" = "True" ]; then
+              echo "::notice::Revision $REV health OK (Ready+ContainerHealthy) on attempt $i/$MAX_TRIES"
               break
             fi
 
             if [ "$i" = "$MAX_TRIES" ]; then
-              echo "::error::Revision $REV not healthy after $MAX_TRIES attempts (Ready=$READY ContainerHealthy=$CONTAINER_HEALTHY Active=$ACTIVE)"
+              echo "::error::Revision $REV not healthy after $MAX_TRIES attempts (Ready=$READY ContainerHealthy=$CONTAINER_HEALTHY)"
               echo "::group::Final revision conditions JSON"
               echo "$STATUS_JSON" | jq '.status.conditions'
               echo "::endgroup::"
               exit 1
             fi
 
-            echo "Attempt $i/$MAX_TRIES: revision $REV pending (Ready=$READY ContainerHealthy=$CONTAINER_HEALTHY Active=$ACTIVE), retry in 5s..."
+            echo "Attempt $i/$MAX_TRIES: revision $REV pending (Ready=$READY ContainerHealthy=$CONTAINER_HEALTHY), retry in 5s..."
             sleep 5
           done
 
