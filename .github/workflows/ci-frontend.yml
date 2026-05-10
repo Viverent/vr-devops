@@ -1,0 +1,124 @@
+name: CI Frontend (Reusable)
+
+# Reusable workflow para validacion de PR en frontends Vite/React.
+# Corre lint (ESLint si existe), type check (tsc --noEmit) y tests
+# (Vitest). Sin deploy.
+#
+# Caller espera (.github/workflows/ci.yml):
+#   uses: Viverent/vr-devops/.github/workflows/ci-frontend.yml@main
+#   with:
+#     working_directory: frontend
+#
+# Asume estructura repo:
+#   ${working_directory}/
+#   |-- package.json
+#   |-- package-lock.json
+#   |-- src/
+#   |-- tsconfig.json
+#   |-- (opcional) eslint.config.js
+#   |-- (opcional) vitest.config.ts
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Subdirectorio donde vive package.json. Default '.'."
+        required: false
+        type: string
+        default: "."
+      node_version:
+        description: "Version Node para el runner."
+        required: false
+        type: string
+        default: "20"
+      run_tests:
+        description: "Si false, salta vitest. Util en repos sin tests todavia."
+        required: false
+        type: boolean
+        default: true
+      run_lint:
+        description: "Si false, salta lint step."
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: ci-frontend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint, Type Check & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Lint con ESLint si esta configurado en el repo. portal-tickets-ui
+      # tiene eslint.config.js. portal-inversionistas-ui no - su `lint`
+      # script usa solo `tsc --noEmit` (que cubrimos en step de tipos).
+      # Detectamos via eslint binary disponible.
+      - name: Lint
+        if: inputs.run_lint
+        run: |
+          set -euo pipefail
+          if [ -f "package.json" ] && grep -q '"lint"' package.json; then
+            echo "::notice::Running 'npm run lint' (script defined)"
+            npm run lint
+          else
+            echo "::warning::package.json no tiene script 'lint', skip"
+          fi
+
+      # Type check explicito. Si el repo no tiene tsconfig.json,
+      # warning + skip (no fail).
+      - name: TypeScript type check (tsc --noEmit)
+        run: |
+          set -euo pipefail
+          if [ -f "tsconfig.json" ]; then
+            npx tsc --noEmit
+          else
+            echo "::warning::tsconfig.json no existe, skip type check"
+          fi
+
+      # Vitest. Si script "test" no existe, warning + skip.
+      - name: Run tests
+        if: inputs.run_tests
+        run: |
+          set -euo pipefail
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            npm test
+          else
+            echo "::warning::package.json no tiene script 'test', skip vitest"
+          fi
+
+      - name: CI summary
+        if: always()
+        run: |
+          {
+            echo "## CI Frontend summary"
+            echo ""
+            echo "| Check | Value |"
+            echo "|-------|-------|"
+            echo "| Working dir | ${{ inputs.working_directory }} |"
+            echo "| Node version | ${{ inputs.node_version }} |"
+            echo "| Lint | ${{ inputs.run_lint }} |"
+            echo "| Tests run | ${{ inputs.run_tests }} |"
+            echo "| Job conclusion | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

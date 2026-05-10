@@ -1,21 +1,27 @@
 name: CI Backend (Reusable)
 
 # Reusable workflow para validacion de PR (sin deploy). Corre lint
-# (ruff), format check, y pytest contra Postgres ephemeral. Usado como
-# required status check via branch protection.
+# (ruff), format check, alembic migrations + pytest contra Postgres
+# ephemeral. Usado como required status check via branch protection.
+#
+# Soporta extensiones Postgres (uuid-ossp, citext, etc.) y aplica
+# migrations alembic antes de tests para que el schema en CI sea
+# representativo del runtime real.
 #
 # Caller espera (.github/workflows/ci.yml):
 #   uses: Viverent/vr-devops/.github/workflows/ci-backend.yml@main
-#   # Opcional para repos sin tests aun:
 #   with:
-#     run_tests: false
+#     pg_extensions: "uuid-ossp,citext"
+#     apply_migrations: true
 #
 # Asume estructura repo (FastAPI standard):
 #   .
 #   |-- app/
 #   |-- tests/
 #   |-- requirements.txt
-#   |-- requirements-dev.txt   (opcional)
+#   |-- requirements-dev.txt
+#   |-- alembic.ini             (opcional; requerido si apply_migrations=true)
+#   |-- db_migrations/          (opcional; alembic migrations)
 #   |-- pyproject.toml          (opcional, para ruff config)
 
 on:
@@ -41,6 +47,16 @@ on:
         required: false
         type: string
         default: "postgresql+asyncpg://test:test@localhost:5432/test_db"
+      pg_extensions:
+        description: "Comma-separated list de extensions Postgres a CREATE EXTENSION antes de tests. Ej: 'uuid-ossp,citext'."
+        required: false
+        type: string
+        default: ""
+      apply_migrations:
+        description: "Si true, corre 'alembic upgrade head' antes de pytest. Requiere alembic.ini en repo root."
+        required: false
+        type: boolean
+        default: false
       extra_env:
         description: "JSON dict con env vars extra para tests. Ej: '{\"REDIS_URL\":\"redis://...\"}'"
         required: false
@@ -60,10 +76,10 @@ jobs:
   lint-and-test:
     name: Lint & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     # Postgres ephemeral para tests. Health check garantiza que el
-    # container esta ready antes de que pytest arranque.
+    # container esta ready antes de que los siguientes steps arranquen.
     services:
       postgres:
         image: postgres:${{ inputs.postgres_version }}
@@ -80,12 +96,16 @@ jobs:
         ports:
           - 5432:5432
 
+    env:
+      # PGPASSWORD permite que psql conecte sin prompt interactivo.
+      PGPASSWORD: test
+
     steps:
       - name: Checkout
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ inputs.python_version }}
           cache: pip
@@ -117,6 +137,50 @@ jobs:
           else
             echo "::warning::ruff no instalado, skip format check"
           fi
+
+      # Crea extensiones Postgres antes de aplicar migrations o correr
+      # tests. Necesario para repos cuyas tablas usan tipos como
+      # `uuid_generate_v4()` o `citext` que requieren extensions
+      # explicitas. Cada extension va en su propio CREATE EXTENSION
+      # IF NOT EXISTS para idempotencia.
+      - name: Install postgres-client + create extensions
+        if: inputs.pg_extensions != ''
+        run: |
+          set -euo pipefail
+          # postgres-client ya viene en ubuntu-latest pero validamos.
+          if ! command -v psql &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y postgresql-client
+          fi
+
+          IFS=',' read -ra EXTS <<< "${{ inputs.pg_extensions }}"
+          for ext in "${EXTS[@]}"; do
+            ext_trim=$(echo "$ext" | xargs)
+            [ -z "$ext_trim" ] && continue
+            echo "::notice::Creating extension: $ext_trim"
+            psql -h localhost -U test -d test_db \
+              -c "CREATE EXTENSION IF NOT EXISTS \"$ext_trim\";"
+          done
+
+      # Aplica alembic migrations contra el postgres ephemeral. Esto
+      # garantiza que los tests corran contra un schema identico al
+      # de runtime (en lugar de Base.metadata.create_all() que puede
+      # divergir si las migrations tienen drift). Idempotent: alembic
+      # comparara version table y solo aplicara migrations pendientes.
+      - name: Apply alembic migrations
+        if: inputs.apply_migrations
+        env:
+          DATABASE_URL: ${{ inputs.database_url }}
+          # Algunos repos leen ALEMBIC_DATABASE_URL en alembic.ini.
+          ALEMBIC_DATABASE_URL: ${{ inputs.database_url }}
+        run: |
+          set -euo pipefail
+          if [ ! -f alembic.ini ]; then
+            echo "::error::apply_migrations=true pero alembic.ini no existe en repo root"
+            exit 1
+          fi
+          echo "::notice::Running alembic upgrade head against test_db"
+          alembic upgrade head
 
       # Pytest con DATABASE_URL apuntando al postgres service container.
       # Si el repo no tiene tests/, warning + skip.
@@ -157,6 +221,8 @@ jobs:
             echo "|-------|-------|"
             echo "| Python | ${{ inputs.python_version }} |"
             echo "| Postgres | postgres:${{ inputs.postgres_version }} |"
+            echo "| Extensions | ${{ inputs.pg_extensions || '(none)' }} |"
+            echo "| Migrations applied | ${{ inputs.apply_migrations }} |"
             echo "| Tests run | ${{ inputs.run_tests }} |"
             echo "| Job conclusion | ${{ job.status }} |"
           } >> "$GITHUB_STEP_SUMMARY"

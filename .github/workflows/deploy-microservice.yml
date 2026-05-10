@@ -6,7 +6,8 @@ name: Deploy Microservice (Reusable)
 #   - WIF auth via gh-actions-${env} (sin SA JSON keys).
 #   - Image naming homologo a build-image.sh (MS_IMAGE_SUFFIX from env).
 #   - Step ordering safety-first:
-#       1. Build + push image (idempotent: skip si ya esta en AR).
+#       1. Build + push image con Docker BuildKit + GHA cache (idempotent:
+#          skip si ya esta en AR).
 #       2. Render Service + Job YAMLs.
 #       3. Migrate job replace + execute (con NUEVA imagen, antes del
 #          service deploy). Si migrate falla, service queda intacto.
@@ -15,7 +16,8 @@ name: Deploy Microservice (Reusable)
 #       6. Smoke /health con retry loop.
 #       7. Rollback automatico si deploy succeded pero smoke fallo.
 #   - Concurrency lock per (service, env) - dos pushes a main no pisan.
-#   - Actions pinned a SHA explicito (anti supply-chain).
+#   - Actions pinned a SHA explicito (anti supply-chain), verificadas
+#     vivas via `gh api repos/<repo>/git/refs/tags/<tag>`.
 #   - Logs verbose con identifiers resueltos para auditoria.
 #
 # Caller espera (.github/workflows/deploy-beta.yml):
@@ -77,12 +79,12 @@ jobs:
 
       # Step 1: caller repo (Dockerfile + source code).
       - name: Checkout caller repo
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # Step 2: vr-devops (templates + render-cloudrun.sh + env files).
       # ref: main asume que vr-devops branch main tiene HEAD valido en remote.
       - name: Checkout vr-devops
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: Viverent/vr-devops
           path: vr-devops
@@ -161,46 +163,72 @@ jobs:
 
       # Step 4: WIF auth -> impersonate gh-actions-${env}.
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: projects/${{ steps.cfg.outputs.pool_project_number }}/locations/global/workloadIdentityPools/github-pool/providers/github-actions
           service_account: ${{ steps.cfg.outputs.service_account }}
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@f0490c7e624c3d6d54ed447a8b5e45ddc4d8c5f # v2.1.2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           project_id: ${{ steps.cfg.outputs.project_id }}
 
-      # Step 5: Configure Docker para push a Artifact Registry.
+      # Step 5: Configure Docker para push a Artifact Registry. Esto
+      # configura ~/.docker/config.json con gcloud como credential
+      # helper, lo cual buildx usa transparentemente via daemon.
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       # ── Build + Render (sin mutar Cloud Run todavia) ─────────────────
 
-      # Step 6: Build + push image. Tag = sha-<git_sha> para
-      # build-once-deploy-many. Plataforma linux/amd64 fija (Cloud Run
-      # gen2 amd64-only). Idempotente: si tag ya en AR, skip.
-      - name: Build and push Docker image
-        id: build
+      # Step 6: Verifica si la imagen ya esta en AR (idempotencia para
+      # re-run del mismo commit). Si existe, skip rebuild en step 8.
+      - name: Check image existence in AR
+        id: image_check
         run: |
           set -euo pipefail
           IMAGE_TAG="${{ steps.cfg.outputs.image_tag }}"
-
           if gcloud artifacts docker images describe "$IMAGE_TAG" \
               --project="${{ steps.cfg.outputs.project_id }}" \
               --quiet >/dev/null 2>&1; then
             echo "::notice::Image $IMAGE_TAG already in AR, skip rebuild"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Building $IMAGE_TAG (linux/amd64)"
-            docker build --platform=linux/amd64 -t "$IMAGE_TAG" .
-            docker push "$IMAGE_TAG"
+            echo "::notice::Image $IMAGE_TAG NOT in AR, will build"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # render-cloudrun.sh espera /tmp/last-image-${SLUG}-${ENV}.txt
-          mkdir -p /tmp
-          echo "$IMAGE_TAG" > "/tmp/last-image-${{ inputs.image_name }}-${{ inputs.env }}.txt"
+      # Step 7: Setup Docker Buildx con GHA layer cache. Acelera builds
+      # consecutivos cacheando capas Docker en el cache de GitHub Actions.
+      # Solo se ejecuta si el step 6 indica que hay que rebuildear.
+      - name: Set up Docker Buildx
+        if: steps.image_check.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      # Step 7: Render Service YAML (subgraph.template.yaml).
+      # Step 8: Build + push con buildx. cache-from/cache-to type=gha
+      # con scope per (image_name, env) para evitar contaminacion entre
+      # repos. mode=max guarda capas intermedias (mas espacio cache, mas
+      # velocidad en runs siguientes).
+      - name: Build and push Docker image (with GHA cache)
+        if: steps.image_check.outputs.exists == 'false'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.cfg.outputs.image_tag }}
+          cache-from: type=gha,scope=${{ inputs.image_name }}-${{ inputs.env }}
+          cache-to: type=gha,scope=${{ inputs.image_name }}-${{ inputs.env }},mode=max
+
+      # Step 9: Escribe el image marker que render-cloudrun.sh lee.
+      # Siempre corre, independiente de si rebuildemos o reusamos AR.
+      - name: Write image marker for render
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp
+          echo "${{ steps.cfg.outputs.image_tag }}" > "/tmp/last-image-${{ inputs.image_name }}-${{ inputs.env }}.txt"
+
+      # Step 10: Render Service YAML (subgraph.template.yaml).
       - name: Render Cloud Run Service YAML
         id: render-service
         run: |
@@ -212,7 +240,7 @@ jobs:
           cat "$OUT"
           echo "::endgroup::"
 
-      # Step 8: Render Job YAML (job.template.yaml). Skip si mode=never.
+      # Step 11: Render Job YAML (job.template.yaml). Skip si mode=never.
       - name: Render Cloud Run Job YAML (migrate)
         id: render-job
         if: inputs.migrate_mode != 'never'
@@ -227,7 +255,7 @@ jobs:
 
       # ── Apply: migrate first, then service, then validate ──────────
 
-      # Step 9: Migrate job replace + execute (BEFORE service deploy).
+      # Step 12: Migrate job replace + execute (BEFORE service deploy).
       # Razon: si migrate falla, el service queda en su revision actual
       # con el schema que esperaba; no entra codigo nuevo a un schema
       # potencialmente roto. Las migrations alembic son forward-only
@@ -288,11 +316,9 @@ jobs:
               ;;
           esac
 
-      # Step 10: Capture revision previa para rollback. Se hace JUSTO
+      # Step 13: Capture revision previa para rollback. Se hace JUSTO
       # antes del deploy del service para que el snapshot represente lo
       # que hay realmente corriendo en runtime al momento de la mutacion.
-      # Si es primer deploy del service, no hay revision previa - el
-      # step Rollback skippeara silencioso (rev string vacio).
       - name: Capture previous service revision (for rollback)
         id: prev_rev
         run: |
@@ -310,7 +336,7 @@ jobs:
             echo "::notice::Previous ready revision captured for rollback: $PREV"
           fi
 
-      # Step 11: Deploy Cloud Run service. Cloud Run mantiene revisiones
+      # Step 14: Deploy Cloud Run service. Cloud Run mantiene revisiones
       # previas en historial (no las borra) - habilitando rollback.
       - name: Deploy Cloud Run service
         id: deploy
@@ -321,10 +347,8 @@ jobs:
             --region=us-central1 \
             --project="${{ steps.cfg.outputs.project_id }}"
 
-      # Step 12: Smoke /health con retry loop. curl -f valida 200; el
+      # Step 15: Smoke /health con retry loop. curl -f valida 200; el
       # status code es suficiente, no hace falta inspeccionar body.
-      # Total time worst-case: MAX_TRIES * (curl_max_time + sleep) =
-      # 12 * (5 + 5) = 120s para smoke_timeout_seconds=60.
       - name: Smoke /health
         id: smoke
         run: |
@@ -356,7 +380,7 @@ jobs:
           echo "::error::Smoke /health failed after ${{ inputs.smoke_timeout_seconds }}s"
           exit 1
 
-      # Step 13: Rollback service si deploy succeeded pero smoke fallo.
+      # Step 16: Rollback service si deploy succeeded pero smoke fallo.
       # NO se rolla DB: las migrations son forward-only por convencion
       # y la revision previa del service es backward-compat con schema
       # nuevo (additive migrations). La revision rota queda en historial
@@ -374,7 +398,7 @@ jobs:
             --project="${{ steps.cfg.outputs.project_id }}"
           echo "::warning::Rollback complete. Investigate failed revision before retry."
 
-      # Step 14: Audit summary visible en GitHub Actions UI.
+      # Step 17: Audit summary visible en GitHub Actions UI.
       - name: Deploy summary
         if: always()
         run: |
@@ -385,6 +409,7 @@ jobs:
             echo "|-------|-------|"
             echo "| Service | ${{ steps.cfg.outputs.full_svc }} |"
             echo "| Image | ${{ steps.cfg.outputs.image_tag }} |"
+            echo "| Image rebuilt | ${{ steps.image_check.outputs.exists == 'false' }} |"
             echo "| Env | ${{ inputs.env }} |"
             echo "| Project | ${{ steps.cfg.outputs.project_id }} |"
             echo "| Git SHA | ${{ steps.cfg.outputs.git_sha }} |"

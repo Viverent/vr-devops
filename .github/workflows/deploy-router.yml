@@ -1,0 +1,294 @@
+name: Deploy Apollo Router (Reusable)
+
+# Reusable workflow para deploy del Apollo Router OSS y auth-validator
+# del proyecto. portal-inversionistas-api hostea ambos containers.
+#
+# IMPORTANTE: este reusable es Tier 3 (ultimo onboarding). Maneja la
+# logica especial de:
+#   1. Composicion del supergraph desde 10 SDLs subgraph.
+#   2. Embed del composed.graphql en la imagen Docker.router.
+#   3. Deploy de DOS servicios en paralelo (router + auth-validator).
+#
+# Estado actual (S09): la composicion del supergraph requiere acceso a
+# los endpoints /internal/schema de los 10 subgrafos, los cuales viven
+# tras ingress=internal. El runner GitHub Actions NO puede llegar al
+# VPC interno. Soluciones futuras:
+#   - (A) Cloud Run Job dedicado a fetch+compose+publish, triggereado
+#     desde el workflow.
+#   - (B) Subscriber Pub/Sub que reciba SDL changes y compose en
+#     background, publicando composed.graphql a GCS. El workflow del
+#     router solo descarga el ultimo composed.graphql.
+#   - (C) Apollo GraphOS (managed service) - tiene fee mensual.
+#
+# Hasta resolver, este workflow deploya con composed.graphql que ya
+# este committeado en el repo (modo bootstrap manual). Cuando arreglemos
+# el fetch, este workflow se extiende con steps de compose dinamico.
+#
+# Caller espera (.github/workflows/deploy-beta.yml en portal-inversionistas-api):
+#   uses: Viverent/vr-devops/.github/workflows/deploy-router.yml@main
+#   with:
+#     env: beta
+#     router_image_name: apollo-router
+#     auth_validator_image_name: auth-validator
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: "Environment target (beta solo por ahora; prod queda diferido a S12)."
+        required: true
+        type: string
+      router_image_name:
+        description: "Nombre del image repo en AR para el Apollo Router."
+        required: false
+        type: string
+        default: "apollo-router"
+      auth_validator_image_name:
+        description: "Nombre del image repo en AR para el auth-validator."
+        required: false
+        type: string
+        default: "auth-validator"
+      compose_supergraph:
+        description: "TODO Tier 3 mature: fetch SDLs y rover compose. Por ahora false (usa composed.graphql committeado)."
+        required: false
+        type: boolean
+        default: false
+      smoke_timeout_seconds:
+        description: "Tiempo de gracia para smoke /graphql post-deploy."
+        required: false
+        type: number
+        default: 90
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-router-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkout vr-devops
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: Viverent/vr-devops
+          path: vr-devops
+          ref: main
+
+      - name: Resolve env config
+        id: cfg
+        run: |
+          set -euo pipefail
+          ENV_TARGET="${{ inputs.env }}"
+
+          if [ ! -f "vr-devops/infra/env/${ENV_TARGET}.env" ]; then
+            echo "::error::Env file vr-devops/infra/env/${ENV_TARGET}.env not found"
+            exit 1
+          fi
+          # shellcheck disable=SC1090
+          source "vr-devops/infra/env/${ENV_TARGET}.env"
+
+          GIT_SHA=$(git rev-parse --short=7 HEAD)
+
+          if [ "$ENV_TARGET" = "prod" ]; then
+            SA_EMAIL="gh-actions-prod@vr-portal-fb.iam.gserviceaccount.com"
+            POOL_PROJ_NUM="126856503055"
+          elif [ "$ENV_TARGET" = "beta" ]; then
+            SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
+            POOL_PROJ_NUM="214382208885"
+          else
+            echo "::error::Unsupported env: $ENV_TARGET"
+            exit 1
+          fi
+
+          ROUTER_IMAGE="${IMAGE_BASE}/${{ inputs.router_image_name }}:sha-${GIT_SHA}"
+          AUTH_VAL_IMAGE="${IMAGE_BASE}/${{ inputs.auth_validator_image_name }}:sha-${GIT_SHA}"
+
+          {
+            echo "project_id=$PROJECT_ID"
+            echo "project_number=$PROJECT_NUMBER"
+            echo "pool_project_number=$POOL_PROJ_NUM"
+            echo "service_account=$SA_EMAIL"
+            echo "git_sha=$GIT_SHA"
+            echo "router_image=$ROUTER_IMAGE"
+            echo "auth_val_image=$AUTH_VAL_IMAGE"
+            echo "router_svc=apollo-router${SVC_SUFFIX}"
+            echo "auth_val_svc=auth-validator${SVC_SUFFIX}"
+            echo "svc_suffix=$SVC_SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::notice::Resolved router deploy config:"
+          echo "  env=$ENV_TARGET"
+          echo "  project=$PROJECT_ID"
+          echo "  router_image=$ROUTER_IMAGE"
+          echo "  auth_validator_image=$AUTH_VAL_IMAGE"
+          echo "  compose_supergraph=${{ inputs.compose_supergraph }}"
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: projects/${{ steps.cfg.outputs.pool_project_number }}/locations/global/workloadIdentityPools/github-pool/providers/github-actions
+          service_account: ${{ steps.cfg.outputs.service_account }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+        with:
+          project_id: ${{ steps.cfg.outputs.project_id }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      # ── Compose supergraph (TODO Tier 3 mature) ──────────────────────
+      # Hoy: skip por inaccesibilidad de /internal/schema desde runner.
+      # Cuando se resuelva con Cloud Run Job o Pub/Sub fanout, este step
+      # se expande con: install rover -> fetch SDLs (10 services) ->
+      # rover supergraph compose -> output composed.graphql al working dir.
+      - name: Compose supergraph (PLACEHOLDER)
+        if: inputs.compose_supergraph
+        run: |
+          set -euo pipefail
+          echo "::error::compose_supergraph=true no soportado en S09. Usar composed.graphql committeado."
+          echo "Detalles del bloqueador: SDL endpoints son ingress=internal."
+          echo "Resolution path: Cloud Run Job dedicado o Pub/Sub fanout (TODO post-S09)."
+          exit 1
+
+      - name: Validate composed.graphql exists in repo
+        if: ${{ !inputs.compose_supergraph }}
+        run: |
+          set -euo pipefail
+          # Apollo router lee supergraph.graphql / composed.graphql segun
+          # la config de Dockerfile.router. Validamos cualquiera de los dos.
+          if [ ! -f "supergraph.graphql" ] && [ ! -f "composed.graphql" ] && \
+             [ ! -f "supergraph.${{ inputs.env }}.composed.graphql" ]; then
+            echo "::error::No supergraph.graphql / composed.graphql / supergraph.${{ inputs.env }}.composed.graphql found in repo root"
+            echo "::error::Compose manualmente con scripts/compose-supergraph.sh y commit antes del push"
+            exit 1
+          fi
+
+      # ── Build + push de las DOS imagenes (router + auth-validator) ──
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build + push apollo-router image
+        id: build-router
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.router
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.cfg.outputs.router_image }}
+          cache-from: type=gha,scope=router-${{ inputs.env }}
+          cache-to: type=gha,scope=router-${{ inputs.env }},mode=max
+
+      - name: Build + push auth-validator image
+        id: build-auth
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.auth_validator
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.cfg.outputs.auth_val_image }}
+          cache-from: type=gha,scope=auth-validator-${{ inputs.env }}
+          cache-to: type=gha,scope=auth-validator-${{ inputs.env }},mode=max
+
+      # Render YAMLs y deploy ambos services. render-cloudrun.sh tiene
+      # branches especificos para auth-validator y apollo-router.
+      - name: Render + Deploy apollo-router
+        id: deploy-router
+        run: |
+          set -euo pipefail
+          echo "${{ steps.cfg.outputs.router_image }}" > "/tmp/last-image-apollo-router-${{ inputs.env }}.txt"
+          cd vr-devops
+          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "apollo-router"
+          OUT="/tmp/cloudrun-apollo-router-${{ inputs.env }}.yaml"
+          echo "::group::Rendered apollo-router YAML"
+          cat "$OUT"
+          echo "::endgroup::"
+          gcloud run services replace "$OUT" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}"
+
+      - name: Render + Deploy auth-validator
+        id: deploy-auth
+        run: |
+          set -euo pipefail
+          echo "${{ steps.cfg.outputs.auth_val_image }}" > "/tmp/last-image-auth-validator-${{ inputs.env }}.txt"
+          cd vr-devops
+          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "auth-validator"
+          OUT="/tmp/cloudrun-auth-validator-${{ inputs.env }}.yaml"
+          echo "::group::Rendered auth-validator YAML"
+          cat "$OUT"
+          echo "::endgroup::"
+          gcloud run services replace "$OUT" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}"
+
+      # Smoke contra auth-validator (ingress=all, llegable desde runner).
+      # Sin auth header esperamos 401 (Firebase auth required) — eso es
+      # el comportamiento correcto, no un fallo de deploy.
+      - name: Smoke auth-validator /graphql
+        id: smoke
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe \
+            "${{ steps.cfg.outputs.auth_val_svc }}" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}" \
+            --format='value(status.url)')
+
+          if [ -z "$URL" ]; then
+            echo "::error::auth-validator URL not found post-deploy"
+            exit 1
+          fi
+
+          TARGET="$URL/graphql"
+          MAX_TRIES=$(( ${{ inputs.smoke_timeout_seconds }} / 5 ))
+          if [ "$MAX_TRIES" -lt 1 ]; then MAX_TRIES=1; fi
+
+          echo "::notice::Smoke target: $TARGET (max $MAX_TRIES attempts x 5s, expecting 401)"
+          for i in $(seq 1 "$MAX_TRIES"); do
+            HTTP_CODE=$(curl -s -o /dev/null --max-time 5 \
+              -w "%{http_code}" \
+              -X POST -H "Content-Type: application/json" \
+              -d '{"query":"{__typename}"}' \
+              "$TARGET" || echo "000")
+            if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "200" ]; then
+              echo "::notice::Smoke OK on attempt $i/$MAX_TRIES (HTTP $HTTP_CODE)"
+              exit 0
+            fi
+            echo "Attempt $i/$MAX_TRIES got HTTP $HTTP_CODE, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Smoke failed after ${{ inputs.smoke_timeout_seconds }}s"
+          exit 1
+
+      - name: Deploy summary
+        if: always()
+        run: |
+          {
+            echo "## Deploy Router summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Env | ${{ inputs.env }} |"
+            echo "| Project | ${{ steps.cfg.outputs.project_id }} |"
+            echo "| Git SHA | ${{ steps.cfg.outputs.git_sha }} |"
+            echo "| Router image | ${{ steps.cfg.outputs.router_image }} |"
+            echo "| Auth-validator image | ${{ steps.cfg.outputs.auth_val_image }} |"
+            echo "| Router deploy | ${{ steps.deploy-router.conclusion || 'not-run' }} |"
+            echo "| Auth-validator deploy | ${{ steps.deploy-auth.conclusion || 'not-run' }} |"
+            echo "| Compose supergraph | ${{ inputs.compose_supergraph }} (TODO Tier 3 mature) |"
+            echo "| Smoke result | ${{ steps.smoke.conclusion || 'not-run' }} |"
+            echo "| Job conclusion | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
