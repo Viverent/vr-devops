@@ -347,38 +347,101 @@ jobs:
             --region=us-central1 \
             --project="${{ steps.cfg.outputs.project_id }}"
 
-      # Step 15: Smoke /health con retry loop. curl -f valida 200; el
-      # status code es suficiente, no hace falta inspeccionar body.
-      - name: Smoke /health
+      # Step 15: Smoke universal via gcloud revision health check.
+      #
+      # Razon: subgrafos ms-* corren con ingress=internal. El GitHub
+      # Actions runner es externo a GCP VPC y recibe 404 de GFE en
+      # cualquier curl HTTP a ingress=internal. Por tanto curl /health
+      # NO es una validacion fiable (falsos negativos).
+      #
+      # En su lugar verificamos:
+      #   1. Revision marcada como Ready=True (deploy completo)
+      #   2. ContainerHealthy=True (startup probe OK)
+      #   3. Active=True (recibiendo traffic)
+      #
+      # Adicionalmente, si el service tiene ingress=all (tickets,
+      # auth-validator), hacemos HTTP curl complementario (best-effort).
+      # Para ingress=internal el HTTP curl se salta con notice.
+      - name: Smoke deploy health
         id: smoke
         run: |
           set -euo pipefail
-          URL=$(gcloud run services describe \
-            "${{ steps.cfg.outputs.full_svc }}" \
-            --region=us-central1 \
-            --project="${{ steps.cfg.outputs.project_id }}" \
-            --format='value(status.url)')
-
-          if [ -z "$URL" ]; then
-            echo "::error::Cloud Run service URL not found post-deploy"
-            exit 1
-          fi
-
-          TARGET="$URL/health"
+          PROJECT="${{ steps.cfg.outputs.project_id }}"
+          SVC="${{ steps.cfg.outputs.full_svc }}"
           MAX_TRIES=$(( ${{ inputs.smoke_timeout_seconds }} / 5 ))
           if [ "$MAX_TRIES" -lt 1 ]; then MAX_TRIES=1; fi
 
-          echo "::notice::Smoke target: $TARGET (max $MAX_TRIES attempts x 5s)"
+          # 1. gcloud revision health (universal, funciona para cualquier ingress)
+          echo "::notice::Validating latest revision health via gcloud (max $MAX_TRIES x 5s)"
           for i in $(seq 1 "$MAX_TRIES"); do
-            if curl -fsSL --max-time 5 -o /dev/null "$TARGET"; then
-              echo "::notice::Smoke OK on attempt $i/$MAX_TRIES"
-              exit 0
+            REV=$(gcloud run services describe "$SVC" \
+              --region=us-central1 --project="$PROJECT" \
+              --format='value(status.latestReadyRevisionName)')
+
+            if [ -z "$REV" ]; then
+              echo "Attempt $i/$MAX_TRIES: latestReadyRevisionName empty, retry in 5s..."
+              sleep 5
+              continue
             fi
-            echo "Attempt $i/$MAX_TRIES failed, retrying in 5s..."
+
+            # Check revision conditions: Ready + ContainerHealthy + Active
+            STATUS=$(gcloud run revisions describe "$REV" \
+              --region=us-central1 --project="$PROJECT" \
+              --format='value(status.conditions)')
+
+            ALL_OK=true
+            for cond in "type=Ready,status=True" "type=ContainerHealthy,status=True" "type=Active,status=True"; do
+              if ! echo "$STATUS" | grep -q "$cond"; then
+                ALL_OK=false
+                break
+              fi
+            done
+
+            if $ALL_OK; then
+              echo "::notice::Revision $REV health OK (Ready+ContainerHealthy+Active) on attempt $i/$MAX_TRIES"
+              break
+            fi
+
+            if [ "$i" = "$MAX_TRIES" ]; then
+              echo "::error::Revision $REV not healthy after $MAX_TRIES attempts"
+              echo "::group::Final revision status"
+              echo "$STATUS"
+              echo "::endgroup::"
+              exit 1
+            fi
+
+            echo "Attempt $i/$MAX_TRIES: revision $REV pending health, retry in 5s..."
             sleep 5
           done
-          echo "::error::Smoke /health failed after ${{ inputs.smoke_timeout_seconds }}s"
-          exit 1
+
+          # 2. HTTP /health curl SOLO si ingress=all (best-effort).
+          INGRESS=$(gcloud run services describe "$SVC" \
+            --region=us-central1 --project="$PROJECT" \
+            --format='value(metadata.annotations[run.googleapis.com/ingress])')
+
+          if [ "$INGRESS" = "all" ]; then
+            URL=$(gcloud run services describe "$SVC" \
+              --region=us-central1 --project="$PROJECT" \
+              --format='value(status.url)')
+            TARGET="$URL/health"
+            echo "::notice::Service ingress=all - additional HTTP smoke at $TARGET"
+            HTTP_OK=false
+            for i in $(seq 1 "$MAX_TRIES"); do
+              if curl -fsSL --max-time 5 -o /dev/null "$TARGET"; then
+                echo "::notice::HTTP smoke OK on attempt $i/$MAX_TRIES"
+                HTTP_OK=true
+                break
+              fi
+              echo "HTTP attempt $i/$MAX_TRIES failed, retry in 5s..."
+              sleep 5
+            done
+            if ! $HTTP_OK; then
+              echo "::error::HTTP /health failed despite ingress=all and revision healthy"
+              exit 1
+            fi
+          else
+            echo "::notice::Service ingress=$INGRESS - skipping external HTTP smoke (not reachable from runner)"
+          fi
 
       # Step 16: Rollback service si deploy succeeded pero smoke fallo.
       # NO se rolla DB: las migrations son forward-only por convencion
