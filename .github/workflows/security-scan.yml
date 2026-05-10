@@ -44,10 +44,10 @@ on:
         type: string
         default: "p/security-audit p/owasp-top-ten"
       severity_break:
-        description: "Severity minimo para break el run (HIGH | CRITICAL)."
+        description: "Severity minimo para break el run (HIGH | CRITICAL). Default CRITICAL durante onboarding inicial; subir a HIGH cuando codebase quede limpia de findings legacy."
         required: false
         type: string
-        default: "HIGH"
+        default: "CRITICAL"
       run_semgrep:
         description: "Habilita Semgrep step."
         required: false
