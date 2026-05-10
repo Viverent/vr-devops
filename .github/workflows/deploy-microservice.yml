@@ -1,0 +1,365 @@
+name: Deploy Microservice (Reusable)
+
+# Reusable workflow para deploy de cualquier ms-*-api a Cloud Run.
+#
+# Diseno production-grade:
+#   - WIF auth via gh-actions-${env} (sin SA JSON keys)
+#   - Image naming homologo a build-image.sh (MS_IMAGE_SUFFIX from env)
+#   - Migrate job recibe el SAME image vio render --job + jobs replace
+#     ANTES de execute (sino correria con imagen vieja sin migrations)
+#   - Rollback automatico si smoke /health falla post-deploy
+#   - Concurrency lock per (service, env) para evitar races en pushes
+#     concurrentes
+#   - Actions pinned a SHA explicito (anti supply-chain)
+#   - Logs verbose con identifiers resueltos para auditoria
+#
+# Caller espera (.github/workflows/deploy-beta.yml) llama con:
+#   uses: Viverent/vr-devops/.github/workflows/deploy-microservice.yml@main
+#   with:
+#     service_name: ms-sales-api
+#     image_name: sales              # slug, sin prefijo "ms-"
+#     env: beta
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Cloud Run service base (sin sufijo). Ej: ms-sales-api."
+        required: true
+        type: string
+      image_name:
+        description: "Slug del subgrafo (sin prefijo 'ms-'). Ej: sales, tickets, identity."
+        required: true
+        type: string
+      env:
+        description: "Environment target (beta solo por ahora; prod queda diferido a S12)."
+        required: true
+        type: string
+      migrate_mode:
+        description: "auto (corre si existe job) | always (fail si no existe) | never (skip explicit)."
+        required: false
+        type: string
+        default: "auto"
+      smoke_timeout_seconds:
+        description: "Tiempo total de gracia para que /health responda 200 post-deploy."
+        required: false
+        type: number
+        default: 60
+      migrate_timeout_minutes:
+        description: "Timeout total para migrate job execute. Migraciones grandes pueden requerir >10 min."
+        required: false
+        type: number
+        default: 30
+
+permissions:
+  id-token: write
+  contents: read
+
+# Concurrency lock: dos pushes a main del mismo repo no se pisan en
+# Cloud Run replace. cancel-in-progress=false serializa los runs en
+# orden de llegada (no descarta uno por el otro).
+concurrency:
+  group: deploy-${{ inputs.service_name }}-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # Step 1: caller repo (Dockerfile + source code).
+      - name: Checkout caller repo
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      # Step 2: vr-devops (templates + render-cloudrun.sh + env files).
+      # ref: main asume que vr-devops branch main tiene HEAD valido.
+      - name: Checkout vr-devops
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: Viverent/vr-devops
+          path: vr-devops
+          ref: main
+
+      # Step 3: Resolve env-specific identifiers leyendo el env file
+      # de vr-devops (single source of truth con orchestrator).
+      - name: Resolve env config
+        id: cfg
+        run: |
+          set -euo pipefail
+          ENV="${{ inputs.env }}"
+          SLUG="${{ inputs.image_name }}"
+
+          # Source env file para acceso a MS_IMAGE_SUFFIX, SVC_SUFFIX, etc.
+          # shellcheck disable=SC1090
+          source "vr-devops/infra/env/${ENV}.env"
+
+          GIT_SHA=$(git rev-parse --short=7 HEAD)
+
+          # Naming homologo a build-image.sh:
+          #   beta: ms-sales (MS_IMAGE_SUFFIX="")
+          #   prod: ms-sales-api (MS_IMAGE_SUFFIX="-api")
+          IMAGE_REPO="ms-${SLUG}${MS_IMAGE_SUFFIX}"
+          IMAGE_TAG="${IMAGE_BASE}/${IMAGE_REPO}:sha-${GIT_SHA}"
+
+          # Service real con sufijo (ms-sales-api-beta).
+          # SVC_SUFFIX viene del env file (-beta o -prod).
+          FULL_SVC="${{ inputs.service_name }}${SVC_SUFFIX}"
+
+          # Job name canonico per S05 conventions.
+          JOB_NAME="ms-${SLUG}-migrate${SVC_SUFFIX}"
+
+          # WIF SA email per env (S08 setup).
+          if [ "$ENV" = "prod" ]; then
+            SA_EMAIL="gh-actions-prod@vr-portal-fb.iam.gserviceaccount.com"
+            POOL_PROJ_NUM="126856503055"
+          else
+            SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
+            POOL_PROJ_NUM="214382208885"
+          fi
+
+          {
+            echo "project_id=$PROJECT_ID"
+            echo "project_number=$PROJECT_NUMBER"
+            echo "pool_project_number=$POOL_PROJ_NUM"
+            echo "service_account=$SA_EMAIL"
+            echo "git_sha=$GIT_SHA"
+            echo "image_repo=$IMAGE_REPO"
+            echo "image_tag=$IMAGE_TAG"
+            echo "image_base=$IMAGE_BASE"
+            echo "full_svc=$FULL_SVC"
+            echo "job_name=$JOB_NAME"
+            echo "svc_suffix=$SVC_SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::notice::Resolved deploy config:"
+          echo "  env=$ENV"
+          echo "  project=$PROJECT_ID ($PROJECT_NUMBER)"
+          echo "  service=$FULL_SVC"
+          echo "  image=$IMAGE_TAG"
+          echo "  job=$JOB_NAME"
+          echo "  sa=$SA_EMAIL"
+          echo "  git_sha=$GIT_SHA"
+
+      # Step 4: WIF auth -> impersonate gh-actions-${env}.
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
+        with:
+          workload_identity_provider: projects/${{ steps.cfg.outputs.pool_project_number }}/locations/global/workloadIdentityPools/github-pool/providers/github-actions
+          service_account: ${{ steps.cfg.outputs.service_account }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@f0490c7e624c3d6d54ed447a8b5e45ddc4d8c5f # v2.1.2
+        with:
+          project_id: ${{ steps.cfg.outputs.project_id }}
+
+      # Step 5: Configure Docker para push a Artifact Registry.
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      # Step 6: Capture revision PREVIA para rollback en caso de smoke fail.
+      # Si es primer deploy del servicio, no hay revision previa; el step
+      # Rollback skippeara silencioso.
+      - name: Capture previous revision for rollback
+        id: prev_rev
+        run: |
+          set -euo pipefail
+          PREV=$(gcloud run services describe \
+            "${{ steps.cfg.outputs.full_svc }}" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}" \
+            --format='value(status.latestReadyRevisionName)' \
+            2>/dev/null || echo "")
+          echo "rev=$PREV" >> "$GITHUB_OUTPUT"
+          if [ -z "$PREV" ]; then
+            echo "::notice::No previous revision (first deploy or service missing); rollback unavailable"
+          else
+            echo "::notice::Previous ready revision captured for rollback: $PREV"
+          fi
+
+      # Step 7: Build + push image. Tag = sha-<git_sha> para
+      # build-once-deploy-many. Plataforma linux/amd64 fija (Cloud Run
+      # gen2 amd64-only).
+      - name: Build and push Docker image
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${{ steps.cfg.outputs.image_tag }}"
+
+          # Idempotencia: si la imagen ya existe en AR (re-run del mismo
+          # commit), skip rebuild. Mismo comportamiento que build-image.sh.
+          if gcloud artifacts docker images describe "$IMAGE_TAG" \
+              --project="${{ steps.cfg.outputs.project_id }}" \
+              --quiet >/dev/null 2>&1; then
+            echo "::notice::Image $IMAGE_TAG already in AR, skip rebuild"
+          else
+            echo "::notice::Building $IMAGE_TAG (linux/amd64)"
+            docker build --platform=linux/amd64 -t "$IMAGE_TAG" .
+            docker push "$IMAGE_TAG"
+          fi
+
+          # render-cloudrun.sh espera /tmp/last-image-${SLUG}-${ENV}.txt
+          mkdir -p /tmp
+          echo "$IMAGE_TAG" > "/tmp/last-image-${{ inputs.image_name }}-${{ inputs.env }}.txt"
+
+      # Step 8: Render Service YAML (subgraph.template.yaml).
+      - name: Render Cloud Run Service YAML
+        run: |
+          set -euo pipefail
+          cd vr-devops
+          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "${{ inputs.image_name }}"
+          OUT="/tmp/cloudrun-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
+          echo "::group::Rendered Service YAML"
+          cat "$OUT"
+          echo "::endgroup::"
+
+      # Step 9: Deploy Cloud Run service. Cloud Run mantiene revisiones
+      # previas (no las borra) — habilitando rollback en step 13.
+      - name: Deploy Cloud Run service
+        run: |
+          set -euo pipefail
+          gcloud run services replace \
+            "/tmp/cloudrun-${{ inputs.image_name }}-${{ inputs.env }}.yaml" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}"
+
+      # Step 10: Render Job YAML (job.template.yaml). Solo si migrate
+      # va a correr en este run (mode != never).
+      - name: Render Cloud Run Job YAML (migrate)
+        if: inputs.migrate_mode != 'never'
+        run: |
+          set -euo pipefail
+          cd vr-devops
+          bash scripts/render-cloudrun.sh "${{ inputs.env }}" "${{ inputs.image_name }}" --job
+          OUT="/tmp/cloudjob-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
+          echo "::group::Rendered Job YAML"
+          cat "$OUT"
+          echo "::endgroup::"
+
+      # Step 11: Update + execute migrate job (3 modos: auto | always | never).
+      # Pattern de orchestrator deploy.sh:
+      #   1. jobs replace (UPDATE image to new sha)
+      #   2. jobs execute --wait
+      # Solo replace si el modo lo requiere.
+      - name: Migrate job replace + execute (mode=${{ inputs.migrate_mode }})
+        timeout-minutes: ${{ inputs.migrate_timeout_minutes }}
+        run: |
+          set -euo pipefail
+          JOB="${{ steps.cfg.outputs.job_name }}"
+          PROJECT="${{ steps.cfg.outputs.project_id }}"
+          MODE="${{ inputs.migrate_mode }}"
+
+          EXISTS=false
+          if gcloud run jobs describe "$JOB" \
+              --region=us-central1 --project="$PROJECT" &>/dev/null; then
+            EXISTS=true
+          fi
+
+          run_migrate() {
+            local job="$1"
+            local proj="$2"
+            local yaml="/tmp/cloudjob-${{ inputs.image_name }}-${{ inputs.env }}.yaml"
+            echo "::notice::Updating job $job image via render YAML"
+            gcloud run jobs replace "$yaml" \
+              --region=us-central1 --project="$proj" --quiet
+            echo "::notice::Executing migrate job $job (sync wait)"
+            gcloud run jobs execute "$job" \
+              --region=us-central1 --project="$proj" --wait
+          }
+
+          case "$MODE" in
+            auto)
+              if $EXISTS; then
+                echo "::notice::Migrate job $JOB exists, mode=auto -> running"
+                run_migrate "$JOB" "$PROJECT"
+              else
+                echo "::notice::Migrate job $JOB does not exist, mode=auto -> skip"
+              fi
+              ;;
+            always)
+              if ! $EXISTS; then
+                echo "::error::Migrate job $JOB declared required (mode=always) but does not exist in $PROJECT"
+                exit 1
+              fi
+              echo "::notice::Migrate job $JOB executing (mode=always)"
+              run_migrate "$JOB" "$PROJECT"
+              ;;
+            never)
+              echo "::notice::Migrate explicitly disabled (mode=never)"
+              ;;
+            *)
+              echo "::error::Invalid migrate_mode: $MODE (expected auto|always|never)"
+              exit 1
+              ;;
+          esac
+
+      # Step 12: Smoke /health con retry loop. curl -f valida 200; el
+      # status code es suficiente, no hace falta inspeccionar body.
+      - name: Smoke /health
+        id: smoke
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe \
+            "${{ steps.cfg.outputs.full_svc }}" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}" \
+            --format='value(status.url)')
+
+          if [ -z "$URL" ]; then
+            echo "::error::Cloud Run service URL not found post-deploy"
+            exit 1
+          fi
+
+          TARGET="$URL/health"
+          MAX_TRIES=$(( ${{ inputs.smoke_timeout_seconds }} / 5 ))
+          if [ "$MAX_TRIES" -lt 1 ]; then MAX_TRIES=1; fi
+
+          echo "::notice::Smoke target: $TARGET (max $MAX_TRIES attempts x 5s)"
+          for i in $(seq 1 "$MAX_TRIES"); do
+            if curl -fsSL --max-time 5 -o /dev/null "$TARGET"; then
+              echo "::notice::Smoke OK on attempt $i/$MAX_TRIES"
+              exit 0
+            fi
+            echo "Attempt $i/$MAX_TRIES failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Smoke /health failed after ${{ inputs.smoke_timeout_seconds }}s"
+          exit 1
+
+      # Step 13: Rollback si smoke fallo. Solo corre si:
+      #   - smoke step termino con failure
+      #   - habia revision previa capturada (no es primer deploy)
+      # Restaura tráfico 100% a la revision anterior. La revision rota
+      # queda como histórica pero NO recibe tráfico — recuperable manual.
+      - name: Rollback to previous revision (smoke failed)
+        if: failure() && steps.smoke.conclusion == 'failure' && steps.prev_rev.outputs.rev != ''
+        run: |
+          set -euo pipefail
+          PREV="${{ steps.prev_rev.outputs.rev }}"
+          echo "::warning::Smoke failed. Rolling back traffic 100% to $PREV"
+          gcloud run services update-traffic \
+            "${{ steps.cfg.outputs.full_svc }}" \
+            --to-revisions="$PREV=100" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}"
+          echo "::warning::Rollback complete. Investigate failed revision before retry."
+
+      # Step 14: Audit summary visible en GitHub Actions UI.
+      - name: Deploy summary
+        if: always()
+        run: |
+          {
+            echo "## Deploy summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Service | ${{ steps.cfg.outputs.full_svc }} |"
+            echo "| Image | ${{ steps.cfg.outputs.image_tag }} |"
+            echo "| Env | ${{ inputs.env }} |"
+            echo "| Project | ${{ steps.cfg.outputs.project_id }} |"
+            echo "| Git SHA | ${{ steps.cfg.outputs.git_sha }} |"
+            echo "| Migrate mode | ${{ inputs.migrate_mode }} |"
+            echo "| Smoke timeout | ${{ inputs.smoke_timeout_seconds }}s |"
+            echo "| Previous rev | ${{ steps.prev_rev.outputs.rev || 'none (first deploy)' }} |"
+            echo "| Smoke result | ${{ steps.smoke.conclusion || 'not-run' }} |"
+            echo "| Job conclusion | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

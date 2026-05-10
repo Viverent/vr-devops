@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local artifacts
+/tmp/
+*.log
+last-image-*.txt
+
+# Render outputs (no commitear YAMLs renderizados localmente)
+cloudrun-*.yaml
+cloudjob-*.yaml
+
+# Credenciales (jamás)
+*.json
+!package.json
+!package-lock.json
+gcloud-key*
+sa-key*
+.env.local

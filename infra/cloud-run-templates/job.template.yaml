@@ -1,0 +1,28 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: "${PROJECT_NUMBER}"
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/vpc-access-connector: ${VPC_CONNECTOR}
+        run.googleapis.com/vpc-access-egress: ${VPC_EGRESS}
+    spec:
+      taskCount: 1
+      template:
+        spec:
+          serviceAccountName: ${RUNTIME_SA_EMAIL}
+          timeoutSeconds: "600"
+          maxRetries: 0
+          containers:
+            - image: ${IMAGE}
+              command: ["alembic"]
+              args: ["upgrade", "head"]
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+${ENV_BLOCK}

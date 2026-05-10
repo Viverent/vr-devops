@@ -1,0 +1,37 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: "${PROJECT_NUMBER}"
+  annotations:
+    run.googleapis.com/ingress: ${INGRESS}
+    run.googleapis.com/ingress-status: ${INGRESS}
+spec:
+  template:
+    metadata:
+      annotations:
+${MIN_SCALE_ANNOT}
+        autoscaling.knative.dev/maxScale: "${MAX_SCALE}"
+        run.googleapis.com/vpc-access-connector: ${VPC_CONNECTOR}
+        run.googleapis.com/vpc-access-egress: ${VPC_EGRESS}
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      serviceAccountName: ${RUNTIME_SA_EMAIL}
+      timeoutSeconds: ${TIMEOUT_SECONDS}
+      containerConcurrency: ${CONCURRENCY}
+      containers:
+        - image: ${IMAGE}
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "${CPU}"
+              memory: ${MEMORY}
+${ENV_BLOCK}
+${VOLUME_MOUNTS_BLOCK}
+${VOLUMES_BLOCK}
+  traffic:
+    - percent: 100
+      latestRevision: true

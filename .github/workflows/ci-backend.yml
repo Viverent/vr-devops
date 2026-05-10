@@ -1,0 +1,160 @@
+name: CI Backend (Reusable)
+
+# Reusable workflow para validacion de PR (sin deploy). Corre lint
+# (ruff), format check, y pytest contra Postgres ephemeral. Usado como
+# required status check via branch protection.
+#
+# Caller espera (.github/workflows/ci.yml):
+#   uses: Viverent/vr-devops/.github/workflows/ci-backend.yml@main
+#   # Opcional para repos sin tests aun:
+#   with:
+#     run_tests: false
+#
+# Asume estructura repo (FastAPI standard):
+#   .
+#   |-- app/
+#   |-- tests/
+#   |-- requirements.txt
+#   |-- requirements-dev.txt   (opcional)
+#   |-- pyproject.toml          (opcional, para ruff config)
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        description: "Version Python para el runner."
+        required: false
+        type: string
+        default: "3.12"
+      run_tests:
+        description: "Si false, salta pytest. Util en repos sin tests todavia."
+        required: false
+        type: boolean
+        default: true
+      postgres_version:
+        description: "Tag Postgres para service container (alpine flavor)."
+        required: false
+        type: string
+        default: "15-alpine"
+      database_url:
+        description: "DATABASE_URL para tests. Default usa el postgres service container."
+        required: false
+        type: string
+        default: "postgresql+asyncpg://test:test@localhost:5432/test_db"
+      extra_env:
+        description: "JSON dict con env vars extra para tests. Ej: '{\"REDIS_URL\":\"redis://...\"}'"
+        required: false
+        type: string
+        default: "{}"
+
+# Concurrency: pushes nuevos al mismo PR cancelan runs viejos para
+# ahorrar minutos de CI. Diferente del deploy (que NO cancela).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Postgres ephemeral para tests. Health check garantiza que el
+    # container esta ready antes de que pytest arranque.
+    services:
+      postgres:
+        image: postgres:${{ inputs.postgres_version }}
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd "pg_isready -U test -d test_db"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+          --health-start-period 5s
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          fi
+
+      # Ruff lint - falla si hay violations no fixeables.
+      # Si requirements-dev no instala ruff, warning + skip (no fail
+      # para no bloquear repos pre-ruff durante onboarding).
+      - name: Ruff lint
+        run: |
+          if command -v ruff &>/dev/null; then
+            ruff check .
+          else
+            echo "::warning::ruff no instalado en requirements-dev, skip lint"
+          fi
+
+      - name: Ruff format check
+        run: |
+          if command -v ruff &>/dev/null; then
+            ruff format --check .
+          else
+            echo "::warning::ruff no instalado, skip format check"
+          fi
+
+      # Pytest con DATABASE_URL apuntando al postgres service container.
+      # Si el repo no tiene tests/, warning + skip.
+      - name: Run tests
+        if: ${{ inputs.run_tests }}
+        run: |
+          set -euo pipefail
+          if [ ! -d tests ]; then
+            echo "::warning::tests/ no existe en repo, skip pytest"
+            exit 0
+          fi
+          pytest tests/ -v --tb=short
+        env:
+          DATABASE_URL: ${{ inputs.database_url }}
+          TESTING: "true"
+          # Caller puede inyectar env vars adicionales serializados como
+          # JSON en `extra_env`. El siguiente bloque los expande.
+          # Patron evita que tengamos N inputs por cada env var.
+          # Limitacion: chars especiales JSON pueden requerir escape.
+          REDIS_URL: ${{ fromJSON(inputs.extra_env).REDIS_URL || '' }}
+          INTERNAL_HMAC_SECRET: ${{ fromJSON(inputs.extra_env).INTERNAL_HMAC_SECRET || 'test-hmac-secret' }}
+          MS_IDENTITY_URL: ${{ fromJSON(inputs.extra_env).MS_IDENTITY_URL || '' }}
+          MS_CONTRACTS_URL: ${{ fromJSON(inputs.extra_env).MS_CONTRACTS_URL || '' }}
+          ATTACHMENT_BUCKET: ${{ fromJSON(inputs.extra_env).ATTACHMENT_BUCKET || 'test-bucket' }}
+          GCS_DOCUMENTS_BUCKET: ${{ fromJSON(inputs.extra_env).GCS_DOCUMENTS_BUCKET || 'test-bucket' }}
+          GCP_PROJECT_ID: ${{ fromJSON(inputs.extra_env).GCP_PROJECT_ID || 'local-dev' }}
+          ENV: "test"
+
+      - name: CI summary
+        if: always()
+        run: |
+          {
+            echo "## CI Backend summary"
+            echo ""
+            echo "| Check | Value |"
+            echo "|-------|-------|"
+            echo "| Python | ${{ inputs.python_version }} |"
+            echo "| Postgres | postgres:${{ inputs.postgres_version }} |"
+            echo "| Tests run | ${{ inputs.run_tests }} |"
+            echo "| Job conclusion | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
