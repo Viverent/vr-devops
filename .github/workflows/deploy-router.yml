@@ -239,17 +239,61 @@ jobs:
             --region=us-central1 \
             --project="${{ steps.cfg.outputs.project_id }}"
 
-      # Smoke contra auth-validator (ingress=all, llegable desde runner).
-      # Sin auth header esperamos 401 (Firebase auth required) — eso es
-      # el comportamiento correcto, no un fallo de deploy.
-      - name: Smoke auth-validator /graphql
+      # Smoke dual: gcloud revision health (router + auth-validator) +
+      # HTTP smoke contra auth-validator (ingress=all, alcanzable desde
+      # runner). Apollo router corre con ingress=internal, no se valida
+      # via HTTP desde runner externo (mismo patron que ms-* en
+      # deploy-microservice.yml).
+      - name: Smoke deploy health (router + auth-validator)
         id: smoke
         run: |
           set -euo pipefail
+          PROJECT="${{ steps.cfg.outputs.project_id }}"
+          MAX_TRIES=$(( ${{ inputs.smoke_timeout_seconds }} / 5 ))
+          if [ "$MAX_TRIES" -lt 1 ]; then MAX_TRIES=1; fi
+
+          # Helper: gcloud revision health check (Ready + ContainerHealthy).
+          check_revision_health() {
+            local svc="$1"
+            for i in $(seq 1 "$MAX_TRIES"); do
+              REV=$(gcloud run services describe "$svc" \
+                --region=us-central1 --project="$PROJECT" \
+                --format='value(status.latestReadyRevisionName)')
+              if [ -z "$REV" ]; then
+                echo "Attempt $i/$MAX_TRIES ($svc): latestReadyRevisionName empty, retry..."
+                sleep 5
+                continue
+              fi
+              STATUS_JSON=$(gcloud run revisions describe "$REV" \
+                --region=us-central1 --project="$PROJECT" \
+                --format=json)
+              READY=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="Ready") | .status')
+              CH=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="ContainerHealthy") | .status')
+              if [ "$READY" = "True" ] && [ "$CH" = "True" ]; then
+                echo "::notice::$svc revision $REV health OK on attempt $i/$MAX_TRIES"
+                return 0
+              fi
+              if [ "$i" = "$MAX_TRIES" ]; then
+                echo "::error::$svc revision $REV not healthy after $MAX_TRIES (Ready=$READY ContainerHealthy=$CH)"
+                echo "$STATUS_JSON" | jq '.status.conditions'
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          echo "::notice::Validating apollo-router revision health"
+          check_revision_health "${{ steps.cfg.outputs.router_svc }}"
+
+          echo "::notice::Validating auth-validator revision health"
+          check_revision_health "${{ steps.cfg.outputs.auth_val_svc }}"
+
+          # HTTP smoke complementario para auth-validator (ingress=all).
+          # Sin auth header esperamos 401 (Firebase auth required) -
+          # comportamiento correcto, no falla de deploy.
           URL=$(gcloud run services describe \
             "${{ steps.cfg.outputs.auth_val_svc }}" \
-            --region=us-central1 \
-            --project="${{ steps.cfg.outputs.project_id }}" \
+            --region=us-central1 --project="$PROJECT" \
             --format='value(status.url)')
 
           if [ -z "$URL" ]; then
@@ -258,10 +302,7 @@ jobs:
           fi
 
           TARGET="$URL/graphql"
-          MAX_TRIES=$(( ${{ inputs.smoke_timeout_seconds }} / 5 ))
-          if [ "$MAX_TRIES" -lt 1 ]; then MAX_TRIES=1; fi
-
-          echo "::notice::Smoke target: $TARGET (max $MAX_TRIES attempts x 5s, expecting 401)"
+          echo "::notice::HTTP smoke auth-validator: $TARGET (expecting 401|200)"
           for i in $(seq 1 "$MAX_TRIES"); do
             HTTP_CODE=$(curl -s -o /dev/null --max-time 5 \
               -w "%{http_code}" \
@@ -269,13 +310,13 @@ jobs:
               -d '{"query":"{__typename}"}' \
               "$TARGET" || echo "000")
             if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "200" ]; then
-              echo "::notice::Smoke OK on attempt $i/$MAX_TRIES (HTTP $HTTP_CODE)"
+              echo "::notice::HTTP smoke OK on attempt $i/$MAX_TRIES (HTTP $HTTP_CODE)"
               exit 0
             fi
-            echo "Attempt $i/$MAX_TRIES got HTTP $HTTP_CODE, retrying in 5s..."
+            echo "HTTP attempt $i/$MAX_TRIES got HTTP $HTTP_CODE, retry in 5s..."
             sleep 5
           done
-          echo "::error::Smoke failed after ${{ inputs.smoke_timeout_seconds }}s"
+          echo "::error::HTTP smoke auth-validator failed after ${{ inputs.smoke_timeout_seconds }}s"
           exit 1
 
       - name: Deploy summary

@@ -104,21 +104,36 @@ jobs:
       - name: Install Semgrep
         run: pip install --upgrade semgrep
 
-      # `semgrep scan` corre todas las reglas de los configs listados.
-      # `--error` retorna exit code 1 si hay findings (default 0 sin error).
-      # Para CONFIGS con espacios separados, expandimos en multiples
-      # --config flags (semgrep's --config no acepta lista space-separated
-      # en un solo flag).
+      # `semgrep scan` corre reglas de los configs listados, filtrado por
+      # severity. `--error` retorna exit 1 si hay findings post-filtro.
+      #
+      # Mapeo severity_break:
+      #   HIGH | CRITICAL -> --severity=ERROR (Semgrep max severity)
+      #
+      # Semgrep no tiene severity CRITICAL nativo. ERROR es el tope
+      # (rule severities: INFO < WARNING < ERROR). Findings WARNING/INFO
+      # quedan visibles en logs pero no rompen el run durante onboarding.
+      #
+      # Configs space-separated se expanden a multiples --config flags
+      # (semgrep --config no acepta lista space-separated en un solo flag).
       - name: Run Semgrep
         run: |
           set -euo pipefail
+          case "${{ inputs.severity_break }}" in
+            HIGH|CRITICAL) SEM_SEVERITY="ERROR" ;;
+            *)
+              echo "::error::severity_break invalido para Semgrep: ${{ inputs.severity_break }} (solo HIGH|CRITICAL)"
+              exit 1
+              ;;
+          esac
           CONFIG_ARGS=""
           # shellcheck disable=SC2086
           for cfg in ${{ inputs.semgrep_config }}; do
             CONFIG_ARGS="$CONFIG_ARGS --config=$cfg"
           done
+          echo "::notice::Semgrep filter severity: $SEM_SEVERITY (configs: ${{ inputs.semgrep_config }})"
           # shellcheck disable=SC2086
-          semgrep scan $CONFIG_ARGS --error
+          semgrep scan $CONFIG_ARGS --severity=$SEM_SEVERITY --error
 
   bandit:
     name: Bandit (Python)
