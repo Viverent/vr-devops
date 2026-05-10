@@ -1,23 +1,27 @@
 # Template workflow para auto-merge de Dependabot patches en GitHub Free.
-# Reemplaza el feature "Dependabot auto-merge" que en Free requiere
-# config UI no-disponible.
+# Reemplaza el feature 'Dependabot auto-merge' (no disponible en Free).
 #
 # Copy a: <repo>/.github/workflows/dependabot-auto-merge.yml
 #
-# Comportamiento:
-#   - Patch updates (X.Y.Z+1) -> auto-merge inmediato si CI pasa
-#   - Minor updates (X.Y+1.0) -> require manual review (no auto-merge)
-#   - Major updates (X+1.0.0) -> require manual review (no auto-merge)
+# Comportamiento Free-compatible:
+#   - Patch updates (X.Y.Z+1) -> wait for ALL CI checks green, then
+#     immediate squash merge (NO --auto flag, que requiere feature
+#     auto-merge no disponible en Free private repos).
+#   - Minor updates (X.Y+1.0) -> manual review (no merge).
+#   - Major updates (X+1.0.0) -> manual review (no merge).
 #
-# Pre-requisitos (IMPORTANTE - sin esto el workflow falla silencioso):
-#   1. Branch protection en main: require status checks (CI) + dismiss
-#      stale reviews. Auto-merge respeta estos.
-#   2. Repo settings -> General -> Allow auto-merge habilitado.
-#   3. Repo settings -> Actions -> General -> Workflow permissions ->
-#      "Allow GitHub Actions to create and approve pull requests"
-#      ENABLED. Sin esto, secrets.GITHUB_TOKEN tiene permisos de
-#      lectura en runs disparados por dependabot[bot] aunque el
-#      workflow declare permissions: pull-requests: write.
+# Pre-requisitos repo:
+#   1. Settings -> Actions -> General -> Workflow permissions ->
+#      'Allow GitHub Actions to create and approve pull requests' enabled
+#      (CRITICO; sin esto secrets.GITHUB_TOKEN queda read-only en runs
+#      disparados por dependabot[bot]).
+#
+# Limitaciones Free vs Team:
+#   - Free: este workflow polea checks via 'gh pr checks --watch'.
+#     Si los checks pasan, mergea inmediatamente.
+#   - Team: en Team se puede usar 'gh pr merge --auto' que respeta
+#     branch protection required checks. Migracion zero-effort: solo
+#     cambiar la linea --squash a --auto --squash cuando upgradees.
 
 name: Dependabot auto-merge
 on:
@@ -32,14 +36,23 @@ jobs:
   auto-merge-patch:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # max wait for CI checks
     steps:
       - name: Get Dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
 
-      - name: Auto-merge patch updates
+      # Solo proceder con patches. Minor/major caen al step de comment.
+      - name: Wait for CI + immediate squash merge (patches only)
         if: steps.meta.outputs.update-type == 'version-update:semver-patch'
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: |
+          # gh pr checks --watch hace polling hasta que todos los checks
+          # completen. --fail-fast aborta si cualquiera falla.
+          # Sin --required (no disponible Free) consideramos TODOS los
+          # checks. Workflow timeout-minutes:30 es el techo absoluto.
+          gh pr checks "$PR_URL" --watch --fail-fast
+          # Si llegamos aqui, todos los checks pasaron. Squash + merge.
+          gh pr merge --squash --delete-branch "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
