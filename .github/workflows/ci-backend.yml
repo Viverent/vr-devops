@@ -47,6 +47,21 @@ on:
         required: false
         type: string
         default: "postgresql+asyncpg://test:test@localhost:5432/test_db"
+      pg_user:
+        description: "Postgres service container user. Override cuando conftest.py hardcodea distinta credencial (ej. ms-identity/ms-tickets usan 'postgres')."
+        required: false
+        type: string
+        default: "test"
+      pg_password:
+        description: "Postgres service container password. Coincide con pg_user."
+        required: false
+        type: string
+        default: "test"
+      pg_db:
+        description: "Postgres service container DB name. Default 'test_db'; ms-identity/ms-tickets override a '<svc>_db_test' para coincidir con conftest hardcoded."
+        required: false
+        type: string
+        default: "test_db"
       pg_extensions:
         description: "Comma-separated list de extensions Postgres a CREATE EXTENSION antes de tests. Ej: 'uuid-ossp,citext'."
         required: false
@@ -84,11 +99,11 @@ jobs:
       postgres:
         image: postgres:${{ inputs.postgres_version }}
         env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test_db
+          POSTGRES_USER: ${{ inputs.pg_user }}
+          POSTGRES_PASSWORD: ${{ inputs.pg_password }}
+          POSTGRES_DB: ${{ inputs.pg_db }}
         options: >-
-          --health-cmd "pg_isready -U test -d test_db"
+          --health-cmd "pg_isready -U ${{ inputs.pg_user }} -d ${{ inputs.pg_db }}"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -98,7 +113,7 @@ jobs:
 
     env:
       # PGPASSWORD permite que psql conecte sin prompt interactivo.
-      PGPASSWORD: test
+      PGPASSWORD: ${{ inputs.pg_password }}
 
     steps:
       - name: Checkout
@@ -158,7 +173,7 @@ jobs:
             ext_trim=$(echo "$ext" | xargs)
             [ -z "$ext_trim" ] && continue
             echo "::notice::Creating extension: $ext_trim"
-            psql -h localhost -U test -d test_db \
+            psql -h localhost -U "${{ inputs.pg_user }}" -d "${{ inputs.pg_db }}" \
               -c "CREATE EXTENSION IF NOT EXISTS \"$ext_trim\";"
           done
 
