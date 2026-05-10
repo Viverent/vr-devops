@@ -384,33 +384,32 @@ jobs:
               continue
             fi
 
-            # Check revision conditions: Ready + ContainerHealthy + Active
-            STATUS=$(gcloud run revisions describe "$REV" \
+            # Check revision conditions: Ready + ContainerHealthy + Active.
+            # Output JSON via --format=json para parseo robusto con jq
+            # (value() returns Python-dict-like serializado que es fragil
+            # de grep'ear).
+            STATUS_JSON=$(gcloud run revisions describe "$REV" \
               --region=us-central1 --project="$PROJECT" \
-              --format='value(status.conditions)')
+              --format=json)
 
-            ALL_OK=true
-            for cond in "type=Ready,status=True" "type=ContainerHealthy,status=True" "type=Active,status=True"; do
-              if ! echo "$STATUS" | grep -q "$cond"; then
-                ALL_OK=false
-                break
-              fi
-            done
+            READY=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="Ready") | .status')
+            CONTAINER_HEALTHY=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="ContainerHealthy") | .status')
+            ACTIVE=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="Active") | .status')
 
-            if $ALL_OK; then
+            if [ "$READY" = "True" ] && [ "$CONTAINER_HEALTHY" = "True" ] && [ "$ACTIVE" = "True" ]; then
               echo "::notice::Revision $REV health OK (Ready+ContainerHealthy+Active) on attempt $i/$MAX_TRIES"
               break
             fi
 
             if [ "$i" = "$MAX_TRIES" ]; then
-              echo "::error::Revision $REV not healthy after $MAX_TRIES attempts"
-              echo "::group::Final revision status"
-              echo "$STATUS"
+              echo "::error::Revision $REV not healthy after $MAX_TRIES attempts (Ready=$READY ContainerHealthy=$CONTAINER_HEALTHY Active=$ACTIVE)"
+              echo "::group::Final revision conditions JSON"
+              echo "$STATUS_JSON" | jq '.status.conditions'
               echo "::endgroup::"
               exit 1
             fi
 
-            echo "Attempt $i/$MAX_TRIES: revision $REV pending health, retry in 5s..."
+            echo "Attempt $i/$MAX_TRIES: revision $REV pending (Ready=$READY ContainerHealthy=$CONTAINER_HEALTHY Active=$ACTIVE), retry in 5s..."
             sleep 5
           done
 
