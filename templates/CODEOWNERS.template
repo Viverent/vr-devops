@@ -1,13 +1,16 @@
 # Template CODEOWNERS para repos backend/frontend en GitHub Free.
 # Copy a: <repo>/.github/CODEOWNERS
 #
-# CODEOWNERS reemplaza "Required reviewers" feature de GitHub Team
-# en repos privados:
-#   - Cuando un PR toca paths matched, los owners listed son automaticamente
-#     requested as reviewers.
-#   - Combinado con branch protection (Require pull request reviews
-#     before merging + Require review from Code Owners), bloquea merges
-#     sin aprobacion del owner correspondiente.
+# ESTADO EN FREE PLAN: este archivo es DECORATIVO. Sin branch protection
+# (no disponible en Free private repos), CODEOWNERS no auto-requesta
+# reviewers ni bloquea merges. Sirve como:
+#   - Documentacion de ownership por path
+#   - Referencia para revisores humanos manuales
+#   - Activador automatico cuando org upgradee a Team
+#
+# En Team plan (futuro): combinado con branch protection (Require
+# pull request reviews + Require review from Code Owners), bloquea
+# merges sin aprobacion del owner correspondiente.
 #
 # Sintaxis:
 #   <pattern>   <owner1> <owner2> ...

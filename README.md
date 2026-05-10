@@ -363,34 +363,91 @@ Frontend:
 ### 2. Config files (`.github/`)
 
 - [ ] `dependabot.yml` — copy del template `dependabot-backend.template.yml` o `dependabot-frontend.template.yml`
-- [ ] `CODEOWNERS` — copy de `templates/CODEOWNERS.template`, ajustar paths
+- [ ] `CODEOWNERS` — copy de `templates/CODEOWNERS.template`, ajustar paths. **NOTA Free**: archivo decorativo sin enforcement (branch protection no disponible). Activa automáticamente si org upgradea a Team.
 
-### 3. Branch protection en `main` (Settings → Branches)
+### 3. Branch protection — NO disponible en Free
 
-- [ ] Require pull request before merging
-- [ ] Require approvals: 1 (vía CODEOWNERS automatic request)
-- [ ] Require status checks to pass before merging:
-  - `Lint & Test` (de `ci-backend.yml` / `ci-frontend.yml`)
-  - `Semgrep SAST`, `Bandit (Python)` o `npm audit`, `Trivy filesystem scan`
-- [ ] Require branches to be up to date before merging
-- [ ] Do not allow bypassing the above settings (uncheck "Allow administrators to bypass")
-- [ ] Require linear history
-- [ ] Allow auto-merge (Settings → General)
+GitHub Free private repos retornan **403 "Upgrade to GitHub Pro"** en
+APIs `branches/main/protection` y `rulesets`. Sin enforcement UI:
 
-### 4. Repo settings (UI o gh api)
+- ✗ NO se puede requerir PR antes de merge
+- ✗ NO se puede requerir approvals
+- ✗ NO se puede requerir status checks pass
+- ✗ NO se puede bloquear force push
+- ✗ NO se puede requerir linear history
 
-- [ ] Enable Dependabot alerts (Code security → Dependabot)
-- [ ] Enable Dependabot security updates
-- [ ] Enable Secret scanning (Code security → Secret scanning)
-- [ ] Enable Push protection (Code security → Secret scanning → Push protection)
-- [ ] Auto-merge enabled (Settings → General → Allow auto-merge)
-- [ ] **Allow GitHub Actions to create and approve pull requests** (Settings → Actions → General → Workflow permissions). REQUERIDO para que dependabot-auto-merge.yml funcione. Sin esto, el `secrets.GITHUB_TOKEN` en runs disparados por dependabot[bot] queda read-only.
+Estrategia: soft enforcement (ver "Soft enforcement strategy" en Decisiones documentadas).
+
+> Cuando upgradeen a Team: estos rules se activan automáticamente sin
+> tocar workflows. Path: Settings → Rules → Rulesets → New branch ruleset.
+
+### 4. Repo settings disponibles en Free (UI o gh api)
+
+```bash
+# Batch via API (correr cuando creen el repo)
+for r in vr-devops ms-sales-api ms-rentals-api ms-collections-api; do
+  # General settings
+  gh api -X PATCH "repos/Viverent/$r" \
+    -F allow_auto_merge=true \
+    -F allow_squash_merge=true \
+    -F allow_merge_commit=false \
+    -F allow_rebase_merge=false \
+    -F delete_branch_on_merge=true
+
+  # Workflow permissions (requiere org-level enable previo)
+  gh api -X PUT "repos/Viverent/$r/actions/permissions/workflow" \
+    -f default_workflow_permissions=write \
+    -F can_approve_pull_request_reviews=true
+done
+```
+
+UI alternativa (`Settings`):
+
+**General → Pull Requests:**
+- ☑ Allow auto-merge (CRÍTICO para dependabot-auto-merge)
+- ☑ Allow squash merging
+- ☐ Allow merge commits (UNCHECK)
+- ☐ Allow rebase merging (UNCHECK)
+- ☑ Automatically delete head branches
+
+**Actions → General → Workflow permissions:**
+- Selecciona "Read and write permissions" (radio button)
+- ☑ **Allow GitHub Actions to create and approve pull requests** (CRÍTICO)
+  - REQUIERE primero habilitarlo a nivel ORG (`/organizations/Viverent/settings/actions`)
+
+**Code security → Dependabot:**
+- ☑ Dependabot alerts
+- ☑ Dependabot security updates
+
+**Code security → Secret scanning:**
+- ✗ NO disponible en Free private repos. Cobertura via `security-scan.yml` workflow (Trivy + Semgrep).
 
 ### 5. Validación post-onboarding
 
-- [ ] PR de prueba: tocar `app/main.py` o equivalente. Verifica que los 4 status checks corren y bloquean merge sin aprobación.
-- [ ] Merge a main. Verifica que `deploy-beta.yml` se dispara y deploya correctamente.
+```bash
+gh api repos/Viverent/<repo> --jq '{
+  auto_merge: .allow_auto_merge,
+  squash_only: (.allow_squash_merge and not .allow_merge_commit and not .allow_rebase_merge),
+  delete_branch: .delete_branch_on_merge,
+  dependabot_sec: .security_and_analysis.dependabot_security_updates.status
+}'
+gh api repos/Viverent/<repo>/actions/permissions/workflow
+```
+
+Esperado:
+- `auto_merge: true`
+- `squash_only: true`
+- `delete_branch: true`
+- `dependabot_sec: enabled`
+- `default_workflow_permissions: write`
+- `can_approve_pull_request_reviews: true`
+
+### 6. Validación E2E (post-Fase 3 push)
+
+- [ ] PR de prueba: tocar `app/main.py` o equivalente. Verifica que workflows corren y reportan resultados (aunque NO bloqueen merge).
+- [ ] Merge a main (manual review). Verifica `deploy-beta.yml` se dispara y deploya.
 - [ ] Smoke en runtime: `curl <service-url>/health` retorna 200.
+- [ ] Forzar PR con CI red: confirmar visualmente que appears red — operator decide no mergear (cultura, no bloqueo automático).
 
 ---
 
@@ -444,23 +501,66 @@ auth comunes y diagnóstico.
 
 ## Decisiones documentadas
 
-### GitHub plan: Free + workarounds
+### GitHub plan: Free + soft enforcement
 
 Org `Viverent` corre en GitHub Free plan (5 seats, 10000 private repos
-quota). Verificado 2026-05-10 vía `gh api orgs/Viverent --jq '.plan'`.
+quota). Decisión: stay Free + soft enforcement strategy. Verificado vía
+API 2026-05-10:
 
-Para alcanzar paridad funcional con Team/Enterprise sin upgrade, usamos:
+```
+gh api orgs/Viverent --jq '.plan'
+{"name":"free","filled_seats":5,"seats":5,"private_repos":10000}
+```
 
-| Feature Team/Enterprise | Reemplazo Free | Implementación |
-|-------------------------|----------------|----------------|
-| Environment required reviewers | `trstringer/manual-approval` action | `templates/deploy-prod-with-approval.template.yml` |
-| Required PR reviewers (UI) | `CODEOWNERS` file + branch protection | `templates/CODEOWNERS.template` |
-| CodeQL native (private) | Semgrep + Bandit + Trivy + npm audit | `.github/workflows/security-scan.yml` |
-| Dependabot auto-merge UI | Workflow custom con `dependabot/fetch-metadata` | `templates/dependabot-auto-merge.template.yml` |
-| Secret scanning | GitHub anuncio Free private repos en May 2024 | Habilitar en Settings → Code security (verifica disponibilidad en tu org) |
-| Push protection (secret) | GitHub anuncio Free private repos en May 2024 | Habilitar en Settings → Code security (verifica disponibilidad en tu org) |
+Tabla feature → estrategia Free (verificadas vía `gh api` real):
 
-**Costo total adicional:** $0/mes. Funcionalidad equivalente.
+| Feature Team/Enterprise | Disponible Free? | Reemplazo Free | Estado |
+|-------------------------|------------------|----------------|--------|
+| Branch protection rules (legacy) | ✗ 403 | NO disponible — soft enforcement | Documentado |
+| Branch rulesets | ✗ 403 | Mismo que arriba | Documentado |
+| Required PR reviewers (UI gate) | ✗ | Convención + revisión manual | Sin enforcement automático |
+| Required status checks (UI gate) | ✗ | Workflows corren pero no bloquean merge | Soft enforcement |
+| CODEOWNERS auto-request | ✗ sin branch protection | Archivo informativo de intent | Decorativo en Free |
+| Secret scanning private | ✗ "not available" | Trivy detecta credenciales en deps + Semgrep en code | Cobertura parcial |
+| Push protection private | ✗ | Pre-commit hook local + Trivy en CI | Soft enforcement |
+| Environment required reviewers | ✗ | `trstringer/manual-approval` con issue gate | Funcional |
+| CodeQL native private | ✗ requires GHAS | Semgrep + Bandit + Trivy + npm audit | Cobertura ~80% |
+| Dependabot auto-merge UI | ✗ | Workflow custom con `dependabot/fetch-metadata` | Funcional |
+| Auto-merge feature | ✓ Free | Habilitado per-repo via API | Funcional |
+| Workflow write permissions | ✓ Free (org-level enable required) | Org settings → Actions → Workflow permissions | Funcional |
+| Dependabot alerts | ✓ Free | UI per-repo o org-level | Funcional |
+| Dependabot security updates | ✓ Free | UI per-repo o org-level | Funcional |
+| Workload Identity Federation | ✓ Free | S08 setup completo | Operacional |
+| Reusable workflows | ✓ Free | Este repo es testimonio | Operacional |
+
+**Costo adicional:** $0/mes.
+
+### Soft enforcement strategy
+
+Sin gates UI, dependemos de:
+
+1. **Workflows informativos** (`ci.yml`, `security-scan.yml`) corren en
+   cada PR. Resultados visibles pero NO bloquean merge automático.
+   Cultura del equipo: "no mergear con red checks".
+2. **Auto-merge selectivo** (`dependabot-auto-merge.yml`) SOLO patches
+   Dependabot, vía `gh pr merge --auto` que respeta status checks
+   present (no required) — si CI falla, auto-merge no aplica.
+3. **Manual approval action** para prod (`trstringer/manual-approval`)
+   con issue gate — Free-compatible.
+4. **CODEOWNERS** como documentación de ownership (no auto-request en
+   Free). Activa enforcement automáticamente si en el futuro upgradean
+   a Team.
+5. **Push directo a main posible:** cualquiera con write access puede
+   pushear sin PR. Mitigaciones:
+   - Convention: README repo dice "no push directo, usa PR"
+   - CI sigue corriendo y reportando aunque no bloquee
+   - Auditoría post-hoc vía `gh api repos/.../events` para detectar violaciones
+
+### Path de upgrade futuro a Team
+
+Costo: $4/seat × 5 seats = **$20/mes**. Migration zero-effort: los
+workflows + CODEOWNERS + manual-approval ya están aplicables. Solo se
+activan los UI gates al pagar.
 
 ### Runner strategy
 
