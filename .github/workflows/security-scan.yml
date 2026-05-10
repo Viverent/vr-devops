@@ -150,11 +150,12 @@ jobs:
       #
       # Bandit no tiene severity CRITICAL (max es HIGH). Tanto severity_break
       # HIGH como CRITICAL mapean al mismo umbral practico: -lll.
+      #
+      # Source dir auto-detection: ms-* repos usan app/, portal-inversionistas-api
+      # usa gateway/. Detectamos en orden: app/ > gateway/ > src/ > working_directory.
       - name: Run Bandit
         run: |
           set -euo pipefail
-          # Tanto HIGH como CRITICAL -> -lll (Bandit max).
-          # Si en el futuro Bandit suma CRITICAL, ajustar este case.
           case "${{ inputs.severity_break }}" in
             HIGH|CRITICAL) BANDIT_LEVEL="-lll" ;;
             *)
@@ -162,7 +163,23 @@ jobs:
               exit 1
               ;;
           esac
-          bandit -r app/ $BANDIT_LEVEL -ii
+
+          # Auto-detect Python source dir.
+          BANDIT_TARGET=""
+          for d in app gateway src; do
+            if [ -d "$d" ]; then
+              BANDIT_TARGET="$d"
+              break
+            fi
+          done
+
+          if [ -z "$BANDIT_TARGET" ]; then
+            echo "::warning::No standard Python source dir found (app/, gateway/, src/) - skip Bandit"
+            exit 0
+          fi
+
+          echo "::notice::Bandit target dir: $BANDIT_TARGET"
+          bandit -r "$BANDIT_TARGET" $BANDIT_LEVEL -ii
 
   trivy:
     name: Trivy filesystem scan
