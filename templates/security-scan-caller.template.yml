@@ -1,0 +1,33 @@
+# Template caller para security-scan.yml reusable.
+# Copy a: <repo>/.github/workflows/security-scan.yml
+#
+# Triggers production-grade:
+#   - push a main: feedback inmediato post-merge
+#   - pull_request a main: bloquea merge si hay vulnerabilidades HIGH+
+#   - weekly cron: detecta CVE nuevos contra codigo existente sin cambios
+#
+# Severity threshold default: HIGH (Medium queda como warning, no bloquea).
+
+name: Security Scan
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Lunes 2am UTC (8pm Sunday CDMX) — fuera de horas habiles.
+    - cron: '0 2 * * 1'
+
+jobs:
+  scan:
+    uses: Viverent/vr-devops/.github/workflows/security-scan.yml@main
+    with:
+      # AJUSTAR per repo:
+      language: python                 # python | javascript
+      working_directory: .             # frontends pueden usar "frontend"
+      severity_break: HIGH             # HIGH | CRITICAL
+      # Opcional: deshabilitar scanners especificos
+      # run_semgrep: true
+      # run_bandit: true
+      # run_trivy: true
+      # run_npm_audit: true   (solo para javascript)

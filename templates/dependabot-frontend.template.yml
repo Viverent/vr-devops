@@ -1,0 +1,58 @@
+# Template Dependabot para repos frontend (Vite/React/TypeScript).
+# Copy a: <repo>/.github/dependabot.yml
+#
+# Auto-updates:
+#   - GitHub Actions SHA pins (weekly)
+#   - npm dependencies (weekly)
+#
+# Si el frontend vive en subdirectorio (ej. portal-tickets-ui/frontend/),
+# ajustar `directory:` en el bloque npm.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  - package-ecosystem: "npm"
+    directory: "/"   # Ajustar a "/frontend" si package.json esta en subdir
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "npm"
+    # Agrupa minor + patch para reducir noise. major en PR separadas.
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-types:
+        patterns:
+          - "@types/*"
+        update-types:
+          - "minor"
+          - "patch"
+          - "major"
+    # Ignore react/react-dom major (breaking changes, manual review).
+    ignore:
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]

@@ -11,22 +11,32 @@ invocan desde sus propios `.github/workflows/`.
 
 ```
 vr-devops/
-├── .github/workflows/
-│   ├── deploy-microservice.yml    Reusable backend (ms-*-api)
-│   ├── ci-backend.yml             Reusable PR validation backends
-│   ├── deploy-frontend.yml        Reusable frontend (Firebase Hosting)
-│   ├── ci-frontend.yml            Reusable PR validation frontends
-│   └── deploy-router.yml          Reusable apollo-router + auth-validator
+├── .github/
+│   ├── workflows/
+│   │   ├── deploy-microservice.yml    Reusable backend (ms-*-api)
+│   │   ├── ci-backend.yml             Reusable PR validation backends
+│   │   ├── deploy-frontend.yml        Reusable frontend (Firebase Hosting)
+│   │   ├── ci-frontend.yml            Reusable PR validation frontends
+│   │   ├── deploy-router.yml          Reusable apollo-router + auth-validator
+│   │   └── security-scan.yml          Reusable SAST + dep scan (Semgrep/Bandit/Trivy)
+│   └── dependabot.yml                  Auto-update GH Actions SHAs (weekly)
 ├── scripts/
-│   └── render-cloudrun.sh         Renderiza YAML Cloud Run via envsubst
+│   └── render-cloudrun.sh             Renderiza YAML Cloud Run via envsubst
 ├── infra/
 │   ├── env/
-│   │   ├── beta.env               Vars beta (PROJECT_ID, VPC, SQL, etc)
-│   │   └── prod.env               Vars prod (FREEZE hasta S12)
+│   │   ├── beta.env                   Vars beta (PROJECT_ID, VPC, SQL, etc)
+│   │   └── prod.env                   Vars prod (FREEZE hasta S12)
 │   └── cloud-run-templates/
-│       ├── subgraph.template.yaml Service Cloud Run para ms-*
-│       ├── job.template.yaml      Job Cloud Run para alembic migrate
-│       └── allowlist.txt          Vars permitidas en envsubst
+│       ├── subgraph.template.yaml     Service Cloud Run para ms-*
+│       ├── job.template.yaml          Job Cloud Run para alembic migrate
+│       └── allowlist.txt              Vars permitidas en envsubst
+├── templates/                          Templates copy-paste para callers
+│   ├── dependabot-backend.template.yml
+│   ├── dependabot-frontend.template.yml
+│   ├── dependabot-auto-merge.template.yml
+│   ├── CODEOWNERS.template
+│   ├── deploy-prod-with-approval.template.yml
+│   └── security-scan-caller.template.yml
 └── README.md
 ```
 
@@ -168,8 +178,41 @@ committeado en el repo (modo bootstrap manual).
 | `env` | string | requerido | `beta` o `prod` |
 | `router_image_name` | string | `apollo-router` | Image repo en AR |
 | `auth_validator_image_name` | string | `auth-validator` | Image repo en AR |
-| `compose_supergraph` | boolean | `false` | TODO Tier 3 mature. Por ahora forzado false. |
+| `compose_supergraph` | boolean | `false` | Diferido: requiere Cloud Run Job (ver "Compose-supergraph implementation plan" abajo). |
 | `smoke_timeout_seconds` | number | `90` | Smoke contra auth-validator /graphql |
+
+---
+
+### `security-scan.yml` — SAST + dependency scan (todos los Tiers)
+
+Reemplaza CodeQL native (que requiere GitHub Advanced Security en
+Enterprise) con stack OSS equivalente:
+- **Semgrep OSS**: 2000+ reglas community, OWASP Top 10, multi-lenguaje.
+- **Bandit**: Python-specific (eval, hardcoded creds, weak crypto).
+- **Trivy**: filesystem + dependency CVE scan (requirements.txt,
+  package-lock.json, Dockerfile).
+- **npm audit**: JavaScript dependency vulnerabilities.
+
+Cada scanner corre como job independiente; falla del scanner falla el
+run. Hallazgos detallados en logs (Free plan no tiene Security tab para
+repos privados).
+
+#### Inputs
+
+| Input | Type | Default | Descripción |
+|-------|------|---------|-------------|
+| `language` | string | requerido | `python` \| `javascript` (decide qué scanners corren) |
+| `working_directory` | string | `.` | Subdir para deps scan (frontends pueden usar `frontend`) |
+| `semgrep_config` | string | `p/security-audit p/owasp-top-ten` | Configs Semgrep separadas por espacio |
+| `severity_break` | string | `HIGH` | `HIGH` \| `CRITICAL` — severity mínimo que rompe el run |
+| `run_semgrep` | boolean | `true` | Disable Semgrep si false |
+| `run_bandit` | boolean | `true` | Disable Bandit (solo aplica a python) |
+| `run_trivy` | boolean | `true` | Disable Trivy filesystem scan |
+| `run_npm_audit` | boolean | `true` | Disable npm audit (solo aplica a javascript) |
+
+#### Caller ejemplo
+
+Ver `templates/security-scan-caller.template.yml`.
 
 ---
 
@@ -188,6 +231,10 @@ SHAs verificados con `gh api repos/<repo>/git/refs/tags/<tag>` el
 | `google-github-actions/setup-gcloud` | `e427ad8a34f8676edf47cf7d7925499adf3eb74f` | v2 |
 | `docker/setup-buildx-action` | `8d2750c68a42422c14e847fe6c8ac0403b4cbd6f` | v3 |
 | `docker/build-push-action` | `10e90e3645eae34f1e60eeb005ba3a3d33f178e8` | v6 |
+| `returntocorp/semgrep-action` | `713efdd345f3035192eaa63f56867b88e63e4e5d` | v1 |
+| `aquasecurity/trivy-action` | `ed142fd0673e97e23eac54620cfb913e5ce36c25` | master (no tags) |
+| `dependabot/fetch-metadata` | `21025c705c08248db411dc16f3619e6b5f9ea21a` | v2 |
+| `trstringer/manual-approval` | `74d99dff7380e3e4b122d4ededcbca2b6ce59367` | v1 |
 
 ### Cómo verificar / actualizar SHAs
 
@@ -285,9 +332,60 @@ Estrategia escalonada para limitar blast radius:
 
 | Tier | Repos | Reusables aplicables | Status |
 |------|-------|----------------------|--------|
-| 1 | `ms-sales-api`, `ms-rentals-api`, `ms-collections-api` | `ci-backend`, `deploy-microservice` | onboarding actual |
-| 2 | `ms-catalog-api`, `ms-persons-api`, 3 frontends | `ci-backend`, `deploy-microservice`, `ci-frontend`, `deploy-frontend` | post Tier 1 verde |
+| 1 | `ms-sales-api`, `ms-rentals-api`, `ms-collections-api` | `ci-backend`, `deploy-microservice`, `security-scan` | onboarding actual |
+| 2 | `ms-catalog-api`, `ms-persons-api`, 3 frontends | `ci-backend`, `deploy-microservice`, `ci-frontend`, `deploy-frontend`, `security-scan` | post Tier 1 verde |
 | 3 | `ms-core-api`, `ms-identity-api`, `ms-tickets-api`, `ms-contracts-api`, `ms-finance-api`, `portal-inversionistas-api` | + `deploy-router` | último, con confianza |
+
+---
+
+## Onboarding checklist por repo (Free plan)
+
+Para un repo nuevo de Tier 1/2/3, pasos en orden:
+
+### 1. Workflows callers (`.github/workflows/`)
+
+Backend:
+- [ ] `ci.yml` — caller de `ci-backend.yml` con `pg_extensions` + `apply_migrations: true`
+- [ ] `deploy-beta.yml` — caller de `deploy-microservice.yml`
+- [ ] `security-scan.yml` — caller de `security-scan.yml` (template `templates/security-scan-caller.template.yml`)
+- [ ] `dependabot-auto-merge.yml` — copy de `templates/dependabot-auto-merge.template.yml`
+
+Frontend:
+- [ ] `ci.yml` — caller de `ci-frontend.yml`
+- [ ] `deploy-beta.yml` — caller de `deploy-frontend.yml`
+- [ ] `security-scan.yml` — caller de `security-scan.yml` con `language: javascript`
+- [ ] `dependabot-auto-merge.yml` — copy de template
+
+### 2. Config files (`.github/`)
+
+- [ ] `dependabot.yml` — copy del template `dependabot-backend.template.yml` o `dependabot-frontend.template.yml`
+- [ ] `CODEOWNERS` — copy de `templates/CODEOWNERS.template`, ajustar paths
+
+### 3. Branch protection en `main` (Settings → Branches)
+
+- [ ] Require pull request before merging
+- [ ] Require approvals: 1 (vía CODEOWNERS automatic request)
+- [ ] Require status checks to pass before merging:
+  - `Lint & Test` (de `ci-backend.yml` / `ci-frontend.yml`)
+  - `Semgrep SAST`, `Bandit (Python)` o `npm audit`, `Trivy filesystem scan`
+- [ ] Require branches to be up to date before merging
+- [ ] Do not allow bypassing the above settings (uncheck "Allow administrators to bypass")
+- [ ] Require linear history
+- [ ] Allow auto-merge (Settings → General)
+
+### 4. Repo settings (UI o gh api)
+
+- [ ] Enable Dependabot alerts (Code security → Dependabot)
+- [ ] Enable Dependabot security updates
+- [ ] Enable Secret scanning (Code security → Secret scanning)
+- [ ] Enable Push protection (Code security → Secret scanning → Push protection)
+- [ ] Auto-merge enabled (Settings → General)
+
+### 5. Validación post-onboarding
+
+- [ ] PR de prueba: tocar `app/main.py` o equivalente. Verifica que los 4 status checks corren y bloquean merge sin aprobación.
+- [ ] Merge a main. Verifica que `deploy-beta.yml` se dispara y deploya correctamente.
+- [ ] Smoke en runtime: `curl <service-url>/health` retorna 200.
 
 ---
 
@@ -339,11 +437,82 @@ auth comunes y diagnóstico.
 
 ---
 
-## TODO post-S09 inicial
+## Decisiones documentadas
 
-- [ ] Cloud Run Job para compose-supergraph automatizado (Tier 3 mature)
-- [ ] `repository_dispatch` desde subgrafo a router al cambiar SDL
-- [ ] Secret scanning + CodeQL workflows (S14)
-- [ ] Self-hosted runner si excede free tier (S13)
-- [ ] Dependabot config para bumpear action SHAs
-- [ ] Migration a tags semver `@v1.0.0` para reusables cuando estabilicen
+### GitHub plan: Free + workarounds
+
+Org `Viverent` corre en GitHub Free plan (5 seats, 10000 private repos
+quota). Verificado 2026-05-10 vía `gh api orgs/Viverent --jq '.plan'`.
+
+Para alcanzar paridad funcional con Team/Enterprise sin upgrade, usamos:
+
+| Feature Team/Enterprise | Reemplazo Free | Implementación |
+|-------------------------|----------------|----------------|
+| Environment required reviewers | `trstringer/manual-approval` action | `templates/deploy-prod-with-approval.template.yml` |
+| Required PR reviewers (UI) | `CODEOWNERS` file + branch protection | `templates/CODEOWNERS.template` |
+| CodeQL native (private) | Semgrep + Bandit + Trivy + npm audit | `.github/workflows/security-scan.yml` |
+| Dependabot auto-merge UI | Workflow custom con `dependabot/fetch-metadata` | `templates/dependabot-auto-merge.template.yml` |
+| Secret scanning | **Free para todos los planes desde 2024** | Habilitado nivel org (UI) |
+| Push protection (secret) | **Free para todos los planes desde 2024** | Habilitado nivel org (UI) |
+
+**Costo total adicional:** $0/mes. Funcionalidad equivalente.
+
+### Runner strategy
+
+Free tier (2k min/mes) confirmado suficiente para volumen actual:
+- ~2 PR/día × 14 repos × ~5 min/PR = ~2.1k min/mes worst-case.
+- Realista (≤1 PR/día): ~1k min/mes, holgura del 50%.
+
+**Self-hosted GCP VM** (e2-medium ~$25/mes ilimitado) queda como
+contingencia pre-aprobada si:
+- Mensualmente excedemos 1.8k min (90% threshold).
+- Empezamos a tener queues consistentes (>5 min wait time).
+
+Setup runbook contingencia:
+```bash
+gcloud compute instances create github-runner-beta \
+  --machine-type=e2-medium \
+  --zone=us-central1-a \
+  --image-family=ubuntu-2204-lts \
+  --image-project=ubuntu-os-cloud \
+  --project=vr-portal-fb-beta
+# Luego: instalar github-actions-runner, registrar al repo/org,
+# servicio systemd.
+```
+
+---
+
+## Trabajo deferido (no TODO — diferido conscientemente)
+
+| Item | Diferido a | Razón |
+|------|-----------|-------|
+| **Compose-supergraph automatizado (Cloud Run Job)** | Post Tier 3 onboarding del router | Requiere bucket GCS + job custom + Dockerfile.compose-supergraph + 4 decisiones técnicas. Bootstrap manual con `composed.graphql` committeado funciona hasta entonces. Roadmap completo en sección "Compose-supergraph implementation plan" abajo. |
+| **`repository_dispatch` SDL change → router recompose** | Post compose-supergraph automation + bot account creation | Bloqueado por dependencia técnica + decisión governance (crear `viverent-ci-bot` GH account). |
+| **Tags semver para reusables (`@v1.0.0`)** | 30 días post Tier 3 verde | Tag prematuro fuerza re-tags si encontramos bugs estructurales. Soak period necesario. |
+
+### Compose-supergraph implementation plan (cuando se desbloquee)
+
+Decisiones tomadas (production-grade picks, registradas):
+- **Bucket region:** single us-central1 (`vr-devops-supergraph-beta`).
+- **Versionado:** ambos blobs `composed-latest.graphql` (overwrite) + `composed-${git_sha}.graphql` con lifecycle 90 días.
+- **Trigger:** dispatch-only desde subgrafos (path filter `app/graphql/**`).
+- **SDL fetch auth:** ID token GCP via `gcloud auth print-identity-token` + `roles/run.invoker` en cada subgrafo para SA `sa-compose-supergraph-${env}`.
+
+Recursos a crear:
+1. Bucket GCS `vr-devops-supergraph-beta` (us-central1) + lifecycle 90d.
+2. SA `sa-compose-supergraph-beta` con roles: `storage.objectAdmin` sobre el bucket + `run.invoker` sobre 10 subgrafos.
+3. Cloud Run Job `compose-supergraph-beta` con VPC connector + imagen Docker custom.
+4. `vr-devops/Dockerfile.compose-supergraph` con `rover` CLI + `compose.sh`.
+5. `deploy-router.yml` extendido con steps trigger job + download blob.
+
+Esfuerzo estimado: 2-3 horas trabajo.
+
+### Bot account requirements (cuando se cree)
+
+- Email dedicado: `viverent-ci-bot@<dominio>` o Gmail+ alias.
+- Agregado a org Viverent como member (no admin).
+- Fine-grained PAT con scope:
+  - Repository access: solo `Viverent/portal-inversionistas-api`.
+  - Permissions: `Actions: read+write`, `Contents: read`.
+  - Expiration: 1 año, renovación documentada en runbook.
+- Almacenado como org secret `PAT_FOR_DISPATCH`, visible solo para 10 ms-* repos.

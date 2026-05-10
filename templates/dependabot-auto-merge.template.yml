@@ -1,0 +1,53 @@
+# Template workflow para auto-merge de Dependabot patches en GitHub Free.
+# Reemplaza el feature "Dependabot auto-merge" que en Free requiere
+# config UI no-disponible.
+#
+# Copy a: <repo>/.github/workflows/dependabot-auto-merge.yml
+#
+# Comportamiento:
+#   - Patch updates (X.Y.Z+1) -> auto-merge inmediato si CI pasa
+#   - Minor updates (X.Y+1.0) -> require manual review (no auto-merge)
+#   - Major updates (X+1.0.0) -> require manual review (no auto-merge)
+#
+# Pre-requisitos:
+#   1. Branch protection en main: require status checks (CI) + dismiss
+#      stale reviews. Auto-merge respeta estos.
+#   2. Repo settings -> General -> Allow auto-merge habilitado.
+
+name: Dependabot auto-merge
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  auto-merge-patch:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+
+      - name: Auto-merge patch updates
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on minor/major (no auto-merge)
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-minor' ||
+          steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: |
+          gh pr comment "$PR_URL" --body "Manual review required: \
+          ${{ steps.meta.outputs.update-type }} update detected for \
+          ${{ steps.meta.outputs.dependency-names }}. Auto-merge solo \
+          aplica a patch updates."
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

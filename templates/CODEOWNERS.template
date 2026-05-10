@@ -1,0 +1,42 @@
+# Template CODEOWNERS para repos backend/frontend en GitHub Free.
+# Copy a: <repo>/.github/CODEOWNERS
+#
+# CODEOWNERS reemplaza "Required reviewers" feature de GitHub Team
+# en repos privados:
+#   - Cuando un PR toca paths matched, los owners listed son automaticamente
+#     requested as reviewers.
+#   - Combinado con branch protection (Require pull request reviews
+#     before merging + Require review from Code Owners), bloquea merges
+#     sin aprobacion del owner correspondiente.
+#
+# Sintaxis:
+#   <pattern>   <owner1> <owner2> ...
+# Owners pueden ser usuarios GitHub o teams (@org/team-name).
+#
+# El ultimo pattern matching gana. Patterns mas especificos al final.
+
+# ── Default reviewer (cualquier archivo no especificado abajo) ──────
+*                       @adriangonzalez-lgtm
+
+# ── Critical paths: requiere doble revision (operador + lead) ───────
+# Descomentar cuando exista @viverent-ci-bot u otro operador en la org:
+# .github/workflows/   @adriangonzalez-lgtm @viverent-tech-lead
+# infra/               @adriangonzalez-lgtm @viverent-tech-lead
+# Dockerfile*          @adriangonzalez-lgtm @viverent-tech-lead
+
+# ── Backend Python paths ────────────────────────────────────────────
+# app/                 @adriangonzalez-lgtm
+# db_migrations/       @adriangonzalez-lgtm
+# alembic.ini          @adriangonzalez-lgtm
+# requirements*.txt    @adriangonzalez-lgtm
+
+# ── Frontend paths (descomentar para frontends) ─────────────────────
+# package.json         @adriangonzalez-lgtm
+# package-lock.json    @adriangonzalez-lgtm
+# src/                 @adriangonzalez-lgtm
+# frontend/src/        @adriangonzalez-lgtm
+
+# ── Security-sensitive (siempre review) ─────────────────────────────
+# **/auth*.py          @adriangonzalez-lgtm
+# **/permissions*.py   @adriangonzalez-lgtm
+# .env*                @adriangonzalez-lgtm

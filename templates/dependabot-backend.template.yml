@@ -1,0 +1,45 @@
+# Template Dependabot para repos backend (Python). Copy a:
+#   <repo>/.github/dependabot.yml
+#
+# Auto-updates:
+#   - GitHub Actions SHA pins (weekly)
+#   - Python pip dependencies (weekly)
+#
+# Auto-merge habilitado para patch updates via dependabot-auto-merge.yml
+# (ver template separado).
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+    # Agrupa minor + patch en una sola PR para reducir noise
+    groups:
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

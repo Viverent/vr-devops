@@ -1,0 +1,26 @@
+# Dependabot config para vr-devops repo central.
+# Actualiza weekly:
+#   - GitHub Actions SHA pins (action versions)
+#
+# vr-devops no tiene dependencies pip/npm propias (solo workflows + bash
+# scripts), asi que solo monitoreamos github-actions.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Mexico_City"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    # No assignees explicitos - el operador revisa manualmente. En el
+    # futuro, agregar `reviewers: ["adriangonzalez-lgtm"]` o usar
+    # CODEOWNERS para asignacion automatica.
