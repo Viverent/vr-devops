@@ -91,12 +91,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Semgrep OSS con configs community. Si encuentra hallazgos
-      # severity >= severity_break, sale con exit 1 y rompe el run.
-      - name: Semgrep scan
-        uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
-        env:
-          SEMGREP_RULES: ${{ inputs.semgrep_config }}
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Instalacion directa de semgrep CLI via pip. La action wrapper
+      # `returntocorp/semgrep-action` esta deprecada (su README oficial
+      # recomienda migrar a CLI nativo). pip install es el path actual
+      # documentado por Semgrep, Inc.
+      - name: Install Semgrep
+        run: pip install --upgrade semgrep
+
+      # `semgrep scan` corre todas las reglas de los configs listados.
+      # `--error` retorna exit code 1 si hay findings (default 0 sin error).
+      # Para CONFIGS con espacios separados, expandimos en multiples
+      # --config flags (semgrep's --config no acepta lista space-separated
+      # en un solo flag).
+      - name: Run Semgrep
+        run: |
+          set -euo pipefail
+          CONFIG_ARGS=""
+          # shellcheck disable=SC2086
+          for cfg in ${{ inputs.semgrep_config }}; do
+            CONFIG_ARGS="$CONFIG_ARGS --config=$cfg"
+          done
+          # shellcheck disable=SC2086
+          semgrep scan $CONFIG_ARGS --error
 
   bandit:
     name: Bandit (Python)
@@ -119,19 +141,27 @@ jobs:
       - name: Install Bandit
         run: pip install --upgrade bandit
 
-      # -ll = solo LOW+ severity. -ii = solo MEDIUM+ confidence (descarta
-      # false positives). El break threshold se mapea:
-      #   HIGH break  -> -lll (only HIGH severity reportada como exit 1)
-      #   CRITICAL break -> --severity-level high (Bandit no tiene CRITICAL,
-      #                     usa HIGH como tope)
+      # Bandit severity flags (cumulative threshold para EXIT CODE):
+      #   -l   shows LOW+   (LOW,MEDIUM,HIGH) -> exit 1 si encuentra cualquiera
+      #   -ll  shows MEDIUM+ (MEDIUM,HIGH)    -> exit 1 si MEDIUM o HIGH
+      #   -lll shows HIGH only                -> exit 1 solo si HIGH
+      # Confidence flags (filtro para REDUCIR false positives):
+      #   -ii  filtra a MEDIUM+ confidence (descarta hallazgos LOW-confidence)
+      #
+      # Bandit no tiene severity CRITICAL (max es HIGH). Tanto severity_break
+      # HIGH como CRITICAL mapean al mismo umbral practico: -lll.
       - name: Run Bandit
         run: |
           set -euo pipefail
-          if [ "${{ inputs.severity_break }}" = "CRITICAL" ]; then
-            BANDIT_LEVEL="-lll"   # only HIGH = bandit's max
-          else
-            BANDIT_LEVEL="-ll"    # MEDIUM + HIGH
-          fi
+          # Tanto HIGH como CRITICAL -> -lll (Bandit max).
+          # Si en el futuro Bandit suma CRITICAL, ajustar este case.
+          case "${{ inputs.severity_break }}" in
+            HIGH|CRITICAL) BANDIT_LEVEL="-lll" ;;
+            *)
+              echo "::error::severity_break invalido para Bandit: ${{ inputs.severity_break }} (solo HIGH|CRITICAL)"
+              exit 1
+              ;;
+          esac
           bandit -r app/ $BANDIT_LEVEL -ii
 
   trivy:
@@ -173,12 +203,20 @@ jobs:
           cache: npm
           cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
 
-      # npm audit retorna exit 1 si hay vulnerabilidades >= severity-level.
-      # Mapeo: HIGH break -> --audit-level=high, CRITICAL -> critical.
+      # npm audit retorna exit 1 si hay vulnerabilidades >= --audit-level.
+      # Valid values per npm docs: low|moderate|high|critical (NOT MEDIUM).
+      # severity_break HIGH -> high. CRITICAL -> critical.
       - name: Run npm audit
         run: |
           set -euo pipefail
-          LEVEL=$(echo "${{ inputs.severity_break }}" | tr '[:upper:]' '[:lower:]')
+          case "${{ inputs.severity_break }}" in
+            HIGH) LEVEL="high" ;;
+            CRITICAL) LEVEL="critical" ;;
+            *)
+              echo "::error::severity_break invalido para npm audit: ${{ inputs.severity_break }} (solo HIGH|CRITICAL)"
+              exit 1
+              ;;
+          esac
           npm audit --audit-level=$LEVEL
 
   summary:

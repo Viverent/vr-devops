@@ -9,10 +9,15 @@
 #   - Minor updates (X.Y+1.0) -> require manual review (no auto-merge)
 #   - Major updates (X+1.0.0) -> require manual review (no auto-merge)
 #
-# Pre-requisitos:
+# Pre-requisitos (IMPORTANTE - sin esto el workflow falla silencioso):
 #   1. Branch protection en main: require status checks (CI) + dismiss
 #      stale reviews. Auto-merge respeta estos.
 #   2. Repo settings -> General -> Allow auto-merge habilitado.
+#   3. Repo settings -> Actions -> General -> Workflow permissions ->
+#      "Allow GitHub Actions to create and approve pull requests"
+#      ENABLED. Sin esto, secrets.GITHUB_TOKEN tiene permisos de
+#      lectura en runs disparados por dependabot[bot] aunque el
+#      workflow declare permissions: pull-requests: write.
 
 name: Dependabot auto-merge
 on:

@@ -52,17 +52,24 @@ jobs:
   await-approval:
     name: Manual approval gate
     runs-on: ubuntu-latest
+    # Job-level timeout-minutes funciona como "tiempo maximo para que
+    # alguien apruebe". Si nadie comenta `approved` en este window, el
+    # job termina con failure. La action `manual-approval` polea cada
+    # 10s hasta que se complete o expire el job.
     timeout-minutes: 1440   # 24h max para aprobar
     steps:
       - name: Pause for manual approval
         uses: trstringer/manual-approval@74d99dff7380e3e4b122d4ededcbca2b6ce59367 # v1
         with:
-          secret: ${{ github.TOKEN }}
+          secret: ${{ secrets.GITHUB_TOKEN }}
           # Lista de GH usernames autorizados para aprobar prod deploys.
           # Editar segun governance del equipo. Minimo 2 owners
           # recomendado para evitar single-point-of-approval.
           approvers: adriangonzalez-lgtm
           minimum-approvals: 1
+          # Default approve words: "approved","approve","lgtm","yes".
+          # Default deny words: "denied","deny","no".
+          # Polling default: 10s entre checks.
           issue-title: "Deploy PROD — ${{ github.repository }} sha=${{ inputs.git_sha }}"
           issue-body: |
             ## Solicitud de deploy a PRODUCCION
@@ -74,19 +81,16 @@ jobs:
             **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             ### Para aprobar
-            Comenta en este issue una de las palabras:
-            `approved`, `approve`, `lgtm`, `yes`
+            Comenta una de las palabras: `approved`, `approve`, `lgtm`, `yes`
 
             ### Para rechazar
-            Comenta:
-            `denied`, `deny`, `no`
+            Comenta: `denied`, `deny`, `no`
 
             ### Pre-deploy checklist (verifica antes de aprobar)
             - [ ] Beta deploy del mismo SHA pasó smoke
             - [ ] Imagen `sha-${{ inputs.git_sha }}` existe en AR de prod
             - [ ] Cambios no requieren migration destructiva
             - [ ] Comunicado a equipo (Slack/email)
-          issue-timeout-minutes: 1440
 
   deploy:
     name: Deploy to PROD

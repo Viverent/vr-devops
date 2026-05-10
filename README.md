@@ -231,10 +231,14 @@ SHAs verificados con `gh api repos/<repo>/git/refs/tags/<tag>` el
 | `google-github-actions/setup-gcloud` | `e427ad8a34f8676edf47cf7d7925499adf3eb74f` | v2 |
 | `docker/setup-buildx-action` | `8d2750c68a42422c14e847fe6c8ac0403b4cbd6f` | v3 |
 | `docker/build-push-action` | `10e90e3645eae34f1e60eeb005ba3a3d33f178e8` | v6 |
-| `returntocorp/semgrep-action` | `713efdd345f3035192eaa63f56867b88e63e4e5d` | v1 |
-| `aquasecurity/trivy-action` | `ed142fd0673e97e23eac54620cfb913e5ce36c25` | master (no tags) |
+| `aquasecurity/trivy-action` | `ed142fd0673e97e23eac54620cfb913e5ce36c25` | v0.36.0 |
 | `dependabot/fetch-metadata` | `21025c705c08248db411dc16f3619e6b5f9ea21a` | v2 |
 | `trstringer/manual-approval` | `74d99dff7380e3e4b122d4ededcbca2b6ce59367` | v1 |
+
+> **Nota sobre Semgrep**: NO usamos `returntocorp/semgrep-action` (deprecada
+> por Semgrep, Inc. — README oficial recomienda migrar a CLI nativo).
+> En su lugar instalamos `semgrep` via `pip install --upgrade semgrep`
+> en el job — sin action de terceros que pinear.
 
 ### Cómo verificar / actualizar SHAs
 
@@ -379,7 +383,8 @@ Frontend:
 - [ ] Enable Dependabot security updates
 - [ ] Enable Secret scanning (Code security → Secret scanning)
 - [ ] Enable Push protection (Code security → Secret scanning → Push protection)
-- [ ] Auto-merge enabled (Settings → General)
+- [ ] Auto-merge enabled (Settings → General → Allow auto-merge)
+- [ ] **Allow GitHub Actions to create and approve pull requests** (Settings → Actions → General → Workflow permissions). REQUERIDO para que dependabot-auto-merge.yml funcione. Sin esto, el `secrets.GITHUB_TOKEN` en runs disparados por dependabot[bot] queda read-only.
 
 ### 5. Validación post-onboarding
 
@@ -452,8 +457,8 @@ Para alcanzar paridad funcional con Team/Enterprise sin upgrade, usamos:
 | Required PR reviewers (UI) | `CODEOWNERS` file + branch protection | `templates/CODEOWNERS.template` |
 | CodeQL native (private) | Semgrep + Bandit + Trivy + npm audit | `.github/workflows/security-scan.yml` |
 | Dependabot auto-merge UI | Workflow custom con `dependabot/fetch-metadata` | `templates/dependabot-auto-merge.template.yml` |
-| Secret scanning | **Free para todos los planes desde 2024** | Habilitado nivel org (UI) |
-| Push protection (secret) | **Free para todos los planes desde 2024** | Habilitado nivel org (UI) |
+| Secret scanning | GitHub anuncio Free private repos en May 2024 | Habilitar en Settings → Code security (verifica disponibilidad en tu org) |
+| Push protection (secret) | GitHub anuncio Free private repos en May 2024 | Habilitar en Settings → Code security (verifica disponibilidad en tu org) |
 
 **Costo total adicional:** $0/mes. Funcionalidad equivalente.
 
