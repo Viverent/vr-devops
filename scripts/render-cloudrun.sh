@@ -188,6 +188,16 @@ build_env_block() {
     out+=$'\n'"                  name: ${SECRET_PREFIX}redis_url"
   fi
 
+  # ms-identity envia emails transaccionales (password reset) via Resend.
+  # Sin RESEND_API_KEY el flow falla silenciosamente — wire obligatorio.
+  if [ "$SVC" = "identity" ]; then
+    out+=$'\n'"            - name: RESEND_API_KEY"
+    out+=$'\n'"              valueFrom:"
+    out+=$'\n'"                secretKeyRef:"
+    out+=$'\n'"                  key: latest"
+    out+=$'\n'"                  name: ${SECRET_PREFIX}resend_api_key"
+  fi
+
   printf '%s' "$out"
 }
 
