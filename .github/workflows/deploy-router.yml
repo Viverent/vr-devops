@@ -178,12 +178,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      # Dockerfile per env porque cada uno COPY'ea supergraph.<env>.graphql
+      # con routing_url del subgrafo en ese entorno:
+      #   - Dockerfile.router       -> COPY supergraph.graphql (URLs -prod-)
+      #   - Dockerfile.router.beta  -> COPY supergraph.beta.graphql (URLs -beta-)
+      # Si beta usa Dockerfile.router → embebe URLs prod → router-beta llama
+      # subgrafos prod (404 desde VPC beta). Confirmado 2026-05-11.
       - name: Build + push apollo-router image
         id: build-router
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          file: Dockerfile.router
+          file: ${{ inputs.env == 'prod' && 'Dockerfile.router' || format('Dockerfile.router.{0}', inputs.env) }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.cfg.outputs.router_image }}
