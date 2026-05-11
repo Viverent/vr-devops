@@ -108,7 +108,15 @@ build_env_block() {
   out+=$'\n'"            - name: ENV"$'\n'"              value: \"${ENV}\""
   out+=$'\n'"            - name: GCP_PROJECT_ID"$'\n'"              value: \"${PROJECT_ID}\""
   out+=$'\n'"            - name: LOG_LEVEL"$'\n'"              value: \"${DEFAULT_LOG_LEVEL}\""
-  out+=$'\n'"            - name: AUTH_MODE"$'\n'"              value: \"${DEFAULT_AUTH_MODE}\""
+  # AUTH_MODE: subgrafos reciben requests del router con headers
+  # X-Firebase-UID/X-Person-Id inyectados upstream (internal_headers).
+  # auth-validator es el front-end gateway: valida Firebase Bearer del
+  # browser y EMITE los headers internos → necesita firebase mode.
+  local auth_mode="${DEFAULT_AUTH_MODE}"
+  if [ "$SVC" = "auth-validator" ]; then
+    auth_mode="firebase"
+  fi
+  out+=$'\n'"            - name: AUTH_MODE"$'\n'"              value: \"${auth_mode}\""
   out+=$'\n'"            - name: DB_POOL_SIZE"$'\n'"              value: \"${DEFAULT_DB_POOL_SIZE}\""
   out+=$'\n'"            - name: DB_POOL_MAX_OVERFLOW"$'\n'"              value: \"${DEFAULT_DB_POOL_MAX_OVERFLOW}\""
 
