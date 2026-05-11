@@ -61,10 +61,21 @@ case "$SVC" in
   auth-validator)
     export INGRESS="$AUTH_VALIDATOR_INGRESS"
     export MEMORY="$AUTH_VALIDATOR_MEMORY"
+    # auth-validator (gateway) llama a apollo-router (ingress=internal,
+    # hostname *.run.app IP publica). VPC_EGRESS=private-ranges-only no
+    # routea hostnames publicos por VPC connector y las requests no
+    # alcanzan el target con ingress=internal. all-traffic fuerza que
+    # todo egress salga via VPC connector, permitiendo que el ingress
+    # check de Cloud Run reconozca la request como interna.
+    export VPC_EGRESS="$AUTH_VALIDATOR_VPC_EGRESS"
     ;;
   apollo-router)
-    # Router corre en internal; auth-validator lo invoca
+    # Router corre en internal; auth-validator lo invoca.
+    # Router llama a subgrafos (10 ms-*, todos ingress=internal). Necesita
+    # all-traffic via VPC para alcanzar hostnames *.run.app con
+    # ingress=internal — mismo razonamiento que auth-validator.
     export INGRESS="internal"
+    export VPC_EGRESS="$ROUTER_VPC_EGRESS"
     ;;
 esac
 
