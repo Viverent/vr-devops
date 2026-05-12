@@ -190,12 +190,19 @@ build_env_block() {
 
   # ms-identity envia emails transaccionales (password reset) via Resend.
   # Sin RESEND_API_KEY el flow falla silenciosamente — wire obligatorio.
+  # PORTAL_URL es el continueUrl que Firebase Identity Toolkit valida
+  # contra authorizedDomains del proyecto Firebase. Sin esta var cae al
+  # default de config.py ("https://app.viverent.com"); en beta ese
+  # dominio NO esta allowlisted → UNAUTHORIZED_DOMAIN → catch en
+  # mutations.py:563 swallows → email nunca sale (confirmado 2026-05-12).
   if [ "$SVC" = "identity" ]; then
     out+=$'\n'"            - name: RESEND_API_KEY"
     out+=$'\n'"              valueFrom:"
     out+=$'\n'"                secretKeyRef:"
     out+=$'\n'"                  key: latest"
     out+=$'\n'"                  name: ${SECRET_PREFIX}resend_api_key"
+    out+=$'\n'"            - name: PORTAL_URL"
+    out+=$'\n'"              value: \"${PORTAL_URL_IDENTITY}\""
   fi
 
   printf '%s' "$out"
