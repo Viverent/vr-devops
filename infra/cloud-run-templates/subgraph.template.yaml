@@ -15,6 +15,7 @@ ${MIN_SCALE_ANNOT}
         run.googleapis.com/vpc-access-connector: ${VPC_CONNECTOR}
         run.googleapis.com/vpc-access-egress: ${VPC_EGRESS}
         run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/cpu-throttling: "${CPU_THROTTLING}"
         run.googleapis.com/execution-environment: gen2
     spec:
       serviceAccountName: ${RUNTIME_SA_EMAIL}
