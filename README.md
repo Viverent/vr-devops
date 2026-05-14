@@ -21,7 +21,8 @@ vr-devops/
 │   │   └── security-scan.yml          Reusable SAST + dep scan (Semgrep/Bandit/Trivy)
 │   └── dependabot.yml                  Auto-update GH Actions SHAs (weekly)
 ├── scripts/
-│   └── render-cloudrun.sh             Renderiza YAML Cloud Run via envsubst
+│   ├── render-cloudrun.sh             Renderiza YAML Cloud Run via envsubst
+│   └── grant-pubsub-iam.sh           Otorga pubsub.publisher a SA de subgrafos
 ├── infra/
 │   ├── env/
 │   │   ├── beta.env                   Vars beta (PROJECT_ID, VPC, SQL, etc)
@@ -39,6 +40,33 @@ vr-devops/
 │   └── security-scan-caller.template.yml
 └── README.md
 ```
+
+---
+
+## Scripts manuales (one-shot, no en workflow)
+
+### `grant-pubsub-iam.sh` — IAM publisher para topics Pub/Sub
+
+Otorga `roles/pubsub.publisher` a la service account de los subgrafos que
+publican a topics Cloud Pub/Sub dedicados. Idempotente.
+
+```sh
+scripts/grant-pubsub-iam.sh beta
+scripts/grant-pubsub-iam.sh prod
+```
+
+Cubre: `sa-ms-tickets<suffix>` → topic `ms-tickets-events<suffix>`.
+
+**Cuándo correrlo:**
+- Después del bootstrap de un proyecto nuevo.
+- Tras crear/recrear un topic o service account.
+- Si las mutations de ms-tickets logean `403 IAM_PERMISSION_DENIED
+  pubsub.topics.publish`.
+
+Requiere gcloud autenticado con `pubsub.topics.setIamPolicy` (Owner o
+Pub/Sub Admin) en el proyecto target. **Incluir en el runbook de
+deploy-prod**: correr `grant-pubsub-iam.sh prod` antes del primer deploy
+prod que use el topic dedicado.
 
 ---
 
