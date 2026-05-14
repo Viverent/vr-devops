@@ -49,6 +49,11 @@ export MIN_SCALE="$DEFAULT_MIN_SCALE"
 export MAX_SCALE="$DEFAULT_MAX_SCALE"
 export CPU="$DEFAULT_CPU"
 export MEMORY="$DEFAULT_MEMORY"
+# CPU throttling: por defecto Cloud Run congela el CPU de la instancia
+# fuera del procesamiento de un request. Para SSE long-lived (ms-tickets)
+# eso impide que pubsub.listen() procese mensajes Redis mientras la
+# conexion esta idle entre eventos. "true" = comportamiento default.
+export CPU_THROTTLING="true"
 
 case "$SVC" in
   tickets)
@@ -57,6 +62,9 @@ case "$SVC" in
     export MIN_SCALE="$TICKETS_MIN_SCALE"
     export CONCURRENCY="$TICKETS_CONCURRENCY"
     export INGRESS="$TICKETS_INGRESS"
+    # SSE necesita CPU asignado siempre para procesar eventos Redis
+    # mientras la conexion esta abierta sin trafico de request.
+    export CPU_THROTTLING="false"
     ;;
   auth-validator)
     export INGRESS="$AUTH_VALIDATOR_INGRESS"
