@@ -76,6 +76,7 @@ case "$SVC" in
     # todo egress salga via VPC connector, permitiendo que el ingress
     # check de Cloud Run reconozca la request como interna.
     export VPC_EGRESS="$AUTH_VALIDATOR_VPC_EGRESS"
+    export MIN_SCALE="${AUTH_VALIDATOR_MIN_SCALE:-0}"
     ;;
   apollo-router)
     # Router corre en internal; auth-validator lo invoca.
@@ -84,7 +85,11 @@ case "$SVC" in
     # ingress=internal — mismo razonamiento que auth-validator.
     export INGRESS="internal"
     export VPC_EGRESS="$ROUTER_VPC_EGRESS"
+    export MIN_SCALE="${ROUTER_MIN_SCALE:-0}"
     ;;
+  identity)
+    export MIN_SCALE="${IDENTITY_MIN_SCALE:-0}"
+  ;;
 esac
 
 # ── Service / Job naming ─────────────────────────────────────────────
