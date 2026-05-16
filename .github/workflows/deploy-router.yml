@@ -1,42 +1,10 @@
 name: Deploy Apollo Router (Reusable)
 
-# Reusable workflow para deploy del Apollo Router OSS y auth-validator
-# del proyecto. portal-inversionistas-api hostea ambos containers.
-#
-# IMPORTANTE: este reusable es Tier 3 (ultimo onboarding). Maneja la
-# logica especial de:
-#   1. Composicion del supergraph desde 10 SDLs subgraph.
-#   2. Embed del composed.graphql en la imagen Docker.router.
-#   3. Deploy de DOS servicios en paralelo (router + auth-validator).
-#
-# Estado actual (S09): la composicion del supergraph requiere acceso a
-# los endpoints /internal/schema de los 10 subgrafos, los cuales viven
-# tras ingress=internal. El runner GitHub Actions NO puede llegar al
-# VPC interno. Soluciones futuras:
-#   - (A) Cloud Run Job dedicado a fetch+compose+publish, triggereado
-#     desde el workflow.
-#   - (B) Subscriber Pub/Sub que reciba SDL changes y compose en
-#     background, publicando composed.graphql a GCS. El workflow del
-#     router solo descarga el ultimo composed.graphql.
-#   - (C) Apollo GraphOS (managed service) - tiene fee mensual.
-#
-# Hasta resolver, este workflow deploya con composed.graphql que ya
-# este committeado en el repo (modo bootstrap manual). Cuando arreglemos
-# el fetch, este workflow se extiende con steps de compose dinamico.
-#
-# Caller espera (.github/workflows/deploy-beta.yml en portal-inversionistas-api):
-#   uses: Viverent/vr-devops/.github/workflows/deploy-router.yml@main
-#   with:
-#     env: beta
-#     router_image_name: apollo-router
-#     auth_validator_image_name: auth-validator
-#   secrets: inherit
-
 on:
   workflow_call:
     inputs:
       env:
-        description: "Environment target (beta solo por ahora; prod queda diferido a S12)."
+        description: "Environment target: dev | beta | prod."
         required: true
         type: string
       router_image_name:
@@ -50,7 +18,7 @@ on:
         type: string
         default: "auth-validator"
       compose_supergraph:
-        description: "TODO Tier 3 mature: fetch SDLs y rover compose. Por ahora false (usa composed.graphql committeado)."
+        description: "TODO Fase 19: fetch SDLs y rover compose. Por ahora false (usa composed.graphql committeado)."
         required: false
         type: boolean
         default: false
@@ -104,8 +72,11 @@ jobs:
           elif [ "$ENV_TARGET" = "beta" ]; then
             SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
             POOL_PROJ_NUM="214382208885"
+          elif [ "$ENV_TARGET" = "dev" ]; then
+            SA_EMAIL="gh-actions-dev@vr-portal-fb-dev.iam.gserviceaccount.com"
+            POOL_PROJ_NUM="248808470845"
           else
-            echo "::error::Unsupported env: $ENV_TARGET"
+            echo "::error::Unsupported env: $ENV_TARGET (only dev|beta|prod)"
             exit 1
           fi
 
@@ -146,18 +117,19 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      # ── Compose supergraph (TODO Tier 3 mature) ──────────────────────
+      # ── Compose supergraph (TODO Fase 19) ───────────────────────────
       # Hoy: skip por inaccesibilidad de /internal/schema desde runner.
-      # Cuando se resuelva con Cloud Run Job o Pub/Sub fanout, este step
-      # se expande con: install rover -> fetch SDLs (10 services) ->
-      # rover supergraph compose -> output composed.graphql al working dir.
+      # Cuando se resuelva con Cloud Run Job o migracion a GraphOS Uplink
+      # (Fase 19 del plan dev), este step se expande con: install rover ->
+      # fetch SDLs (10 services) -> rover supergraph compose -> output
+      # composed.graphql al working dir.
       - name: Compose supergraph (PLACEHOLDER)
         if: inputs.compose_supergraph
         run: |
           set -euo pipefail
-          echo "::error::compose_supergraph=true no soportado en S09. Usar composed.graphql committeado."
+          echo "::error::compose_supergraph=true no soportado todavia. Usar composed.graphql committeado."
           echo "Detalles del bloqueador: SDL endpoints son ingress=internal."
-          echo "Resolution path: Cloud Run Job dedicado o Pub/Sub fanout (TODO post-S09)."
+          echo "Resolution path: Cloud Run Job dedicado o migracion Uplink (Fase 19 plan dev)."
           exit 1
 
       - name: Validate composed.graphql exists in repo
@@ -182,6 +154,7 @@ jobs:
       # con routing_url del subgrafo en ese entorno:
       #   - Dockerfile.router       -> COPY supergraph.graphql (URLs -prod-)
       #   - Dockerfile.router.beta  -> COPY supergraph.beta.graphql (URLs -beta-)
+      #   - Dockerfile.router.dev   -> COPY supergraph.dev.graphql (URLs -dev-)
       # Si beta usa Dockerfile.router → embebe URLs prod → router-beta llama
       # subgrafos prod (404 desde VPC beta). Confirmado 2026-05-11.
       - name: Build + push apollo-router image
@@ -258,7 +231,6 @@ jobs:
           MAX_TRIES=$(( ${{ inputs.smoke_timeout_seconds }} / 5 ))
           if [ "$MAX_TRIES" -lt 1 ]; then MAX_TRIES=1; fi
 
-          # Helper: gcloud revision health check (Ready + ContainerHealthy).
           check_revision_health() {
             local svc="$1"
             for i in $(seq 1 "$MAX_TRIES"); do
@@ -340,7 +312,8 @@ jobs:
             echo "| Auth-validator image | ${{ steps.cfg.outputs.auth_val_image }} |"
             echo "| Router deploy | ${{ steps.deploy-router.conclusion || 'not-run' }} |"
             echo "| Auth-validator deploy | ${{ steps.deploy-auth.conclusion || 'not-run' }} |"
-            echo "| Compose supergraph | ${{ inputs.compose_supergraph }} (TODO Tier 3 mature) |"
+            echo "| Compose supergraph | ${{ inputs.compose_supergraph }} (TODO Fase 19) |"
             echo "| Smoke result | ${{ steps.smoke.conclusion || 'not-run' }} |"
             echo "| Job conclusion | ${{ job.status }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+

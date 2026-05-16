@@ -1,38 +1,14 @@
 name: Deploy Frontend Firebase Hosting (Reusable)
 
-# Reusable workflow para deploy de frontends Vite/React a Firebase
-# Hosting. Soporta los 3 sites del proyecto:
-#   - app-viverent-${env}        (auth-ui)
-#   - backoffice-viverent-${env} (tickets-ui)
-#   - inversionistas-${env}      (inversionistas-ui)
-#
-# Diseno production-grade:
-#   - WIF auth via gh-actions-${env} con roles/firebasehosting.admin.
-#   - Build con Vite mode env-specific (.env.${env} debe estar en repo
-#     o materializarse desde Secret Manager). Per S01, los 3 frontends
-#     ya tienen .env.beta committeado.
-#   - Smoke HEAD post-deploy contra el URL canonico.
-#   - Concurrency lock per (target, env).
-#   - Actions pinned a SHA verificado.
-#
-# Caller espera (.github/workflows/deploy-beta.yml):
-#   uses: Viverent/vr-devops/.github/workflows/deploy-frontend.yml@main
-#   with:
-#     hosting_target: backoffice-beta   # nombre del Firebase target
-#     env: beta
-#     working_directory: frontend       # subdir donde vive package.json
-#                                       # Default ".". Para portal-tickets-ui es "frontend".
-#   secrets: inherit
-
 on:
   workflow_call:
     inputs:
       hosting_target:
-        description: "Firebase Hosting target name (ej. auth-beta, backoffice-beta, investor-beta)."
+        description: "Firebase Hosting target name (ej. auth-beta, backoffice-beta, investor-beta, auth-dev)."
         required: true
         type: string
       env:
-        description: "Environment target (beta solo por ahora; prod queda diferido a S12)."
+        description: "Environment target: dev | beta | prod."
         required: true
         type: string
       working_directory:
@@ -60,8 +36,6 @@ permissions:
   id-token: write
   contents: read
 
-# Concurrency lock per (hosting_target, env) - dos pushes a main no
-# pisan deployments al mismo site.
 concurrency:
   group: deploy-frontend-${{ inputs.hosting_target }}-${{ inputs.env }}
   cancel-in-progress: false
@@ -79,8 +53,6 @@ jobs:
 
       - name: Resolve env config
         id: cfg
-        # Este step corre en working-directory por defecto pero los
-        # archivos vr-devops estan en root. Override con `working-directory: .`.
         working-directory: .
         run: |
           set -euo pipefail
@@ -94,8 +66,12 @@ jobs:
             PROJECT_ID="vr-portal-fb-beta"
             POOL_PROJ_NUM="214382208885"
             SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
+          elif [ "$ENV_TARGET" = "dev" ]; then
+            PROJECT_ID="vr-portal-fb-dev"
+            POOL_PROJ_NUM="248808470845"
+            SA_EMAIL="gh-actions-dev@vr-portal-fb-dev.iam.gserviceaccount.com"
           else
-            echo "::error::Unsupported env: $ENV_TARGET (only beta|prod)"
+            echo "::error::Unsupported env: $ENV_TARGET (only dev|beta|prod)"
             exit 1
           fi
 
@@ -136,10 +112,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Vite lee .env.${env} automaticamente cuando se invoca con
-      # --mode ${env}. Per S01 los 3 frontends tienen sus .env.beta
-      # committeado al repo. Si no existiera, build falla con error
-      # explicito (vite reporta vars vacias).
       - name: Validate env file
         run: |
           set -euo pipefail
@@ -152,9 +124,6 @@ jobs:
       - name: Build frontend (vite mode=${{ inputs.env }})
         run: npm run build -- --mode ${{ inputs.env }}
 
-      # Firebase CLI hace deploy via service account. La auth WIF de
-      # google-github-actions/auth@v2 expone GOOGLE_APPLICATION_CREDENTIALS
-      # apuntando a un file temporal. firebase-tools lo respeta.
       - name: Install firebase-tools
         working-directory: .
         run: npm install -g firebase-tools@13
@@ -169,8 +138,6 @@ jobs:
             --non-interactive \
             --force
 
-      # Smoke HEAD opcional: si caller pasa smoke_url, valida que el
-      # site responda 200. Si no, skip.
       - name: Smoke HEAD on hosting URL
         id: smoke
         if: inputs.smoke_url != ''
