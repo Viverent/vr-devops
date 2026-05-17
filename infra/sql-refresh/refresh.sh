@@ -22,8 +22,22 @@ apply_dump_to() {
   local target_db="$1"
   local source_object="$2"
   echo "[$(date -Iseconds)] Apply to $target_db (source=$source_object)"
-  psql --host="$DB_HOST" --username="$DB_USER" --dbname="$target_db" \
-    -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"
+  # drop dinamico de todos los schemas non-system para garantizar wipe completo antes del load
+  psql --host="$DB_HOST" --username="$DB_USER" --dbname="$target_db" -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE s text;
+BEGIN
+  FOR s IN
+    SELECT nspname FROM pg_namespace
+    WHERE nspname NOT IN ('information_schema','pg_catalog','pg_toast')
+      AND nspname NOT LIKE 'pg_temp_%'
+      AND nspname NOT LIKE 'pg_toast_temp_%'
+  LOOP
+    EXECUTE 'DROP SCHEMA IF EXISTS ' || quote_ident(s) || ' CASCADE';
+  END LOOP;
+END $$;
+CREATE SCHEMA public;
+SQL
   gsutil cat "$source_object" \
     | psql --host="$DB_HOST" --username="$DB_USER" --dbname="$target_db" -v ON_ERROR_STOP=1
 }

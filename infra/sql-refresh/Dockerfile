@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY refresh.sh /usr/local/bin/refresh.sh
-RUN chmod +x /usr/local/bin/refresh.sh
+COPY trigger-workflow.sh /usr/local/bin/trigger-workflow.sh
+RUN chmod +x /usr/local/bin/refresh.sh /usr/local/bin/trigger-workflow.sh
 
 ENTRYPOINT ["/usr/local/bin/refresh.sh"]
