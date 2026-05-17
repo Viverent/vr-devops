@@ -32,6 +32,11 @@ on:
         required: false
         type: number
         default: 30
+      apollo_subgraph_name:
+        description: "Subgraph name registrado en Apollo Studio. Si vacio, skip rover publish. Ej: ms_catalog, ms_tickets."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   id-token: write
@@ -343,6 +348,47 @@ jobs:
           else
             echo "::notice::Service ingress=$INGRESS - skipping external HTTP smoke (not reachable from runner)"
           fi
+
+      - name: Rover subgraph publish
+        if: inputs.apollo_subgraph_name != '' && steps.smoke.conclusion == 'success'
+        env:
+          APOLLO_SECRET_NAME: ${{ inputs.env == 'prod' && 'prod_apollo_key' || format('{0}_apollo_key', inputs.env) }}
+          APOLLO_VARIANT: ${{ inputs.env == 'prod' && 'main' || inputs.env }}
+        run: |
+          set -euo pipefail
+
+          INGRESS=$(gcloud run services describe "${{ steps.cfg.outputs.full_svc }}" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}" \
+            --format='value(metadata.annotations[run.googleapis.com/ingress])')
+
+          if [ "$INGRESS" != "all" ]; then
+            echo "::warning::ingress=$INGRESS — SDL no accesible desde runner externo. Skip rover publish."
+            echo "::warning::Para re-sync schema: toggle ingress=all temporal o esperar VPC fetcher job futuro."
+            exit 0
+          fi
+
+          curl -sSL https://rover.apollo.dev/nix/v0.38.1 | sh
+          export PATH="$HOME/.rover/bin:$PATH"
+
+          # APOLLO_KEY se lee desde Secret Manager via WIF
+          APOLLO_KEY_VALUE=$(gcloud secrets versions access latest \
+            --secret="$APOLLO_SECRET_NAME" \
+            --project="${{ steps.cfg.outputs.project_id }}")
+
+          SVC_URL=$(gcloud run services describe "${{ steps.cfg.outputs.full_svc }}" \
+            --region=us-central1 \
+            --project="${{ steps.cfg.outputs.project_id }}" \
+            --format='value(status.url)')
+
+          SDL_FILE=/tmp/${{ inputs.apollo_subgraph_name }}.graphql
+          curl -sSf "$SVC_URL/internal/schema" -o "$SDL_FILE"
+
+          APOLLO_KEY="$APOLLO_KEY_VALUE" rover subgraph publish "viverent-supergraph@$APOLLO_VARIANT" \
+            --name "${{ inputs.apollo_subgraph_name }}" \
+            --routing-url "$SVC_URL/graphql" \
+            --schema "$SDL_FILE" \
+            --convert
 
       - name: Rollback to previous revision (smoke failed)
         if: failure() && steps.deploy.conclusion == 'success' && steps.smoke.conclusion == 'failure' && steps.prev_rev.outputs.rev != ''

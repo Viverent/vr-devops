@@ -77,6 +77,20 @@ on:
         required: false
         type: string
         default: "{}"
+      apollo_subgraph_name:
+        description: "Subgraph name en Apollo Studio para rover check. Si vacio, skip check."
+        required: false
+        type: string
+        default: ""
+      apollo_schema_export_cmd:
+        description: "Comando python que imprime SDL a stdout. Ej: 'from app.graphql.schema import schema; print(schema.as_str())'"
+        required: false
+        type: string
+        default: "from app.graphql.schema import schema; print(schema.as_str())"
+    secrets:
+      APOLLO_KEY:
+        description: "Apollo Studio API key para rover check. Read scope suficiente."
+        required: false
 
 # Concurrency: pushes nuevos al mismo PR cancelan runs viejos para
 # ahorrar minutos de CI. Diferente del deploy (que NO cancela).
@@ -225,6 +239,32 @@ jobs:
           # ENV: "dev" matchea el Literal de config.py (S03 hardening).
           # "test" no es valor permitido; usar "dev" para CI.
           ENV: "dev"
+
+      - name: Rover subgraph check
+        if: ${{ inputs.apollo_subgraph_name != '' && github.event_name == 'pull_request' && secrets.APOLLO_KEY != '' }}
+        env:
+          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+        run: |
+          set -euo pipefail
+
+          # base ref mapea al variant target: dev->@dev beta->@beta main->@main
+          BASE="${{ github.base_ref }}"
+          case "$BASE" in
+            main) VARIANT=main ;;
+            beta) VARIANT=beta ;;
+            dev)  VARIANT=dev ;;
+            *)    echo "::warning::base_ref=$BASE no mapea a variant. Skip rover check."; exit 0 ;;
+          esac
+
+          curl -sSL https://rover.apollo.dev/nix/v0.38.1 | sh
+          export PATH="$HOME/.rover/bin:$PATH"
+
+          SDL_FILE=/tmp/${{ inputs.apollo_subgraph_name }}.graphql
+          python -c "${{ inputs.apollo_schema_export_cmd }}" > "$SDL_FILE"
+
+          rover subgraph check "viverent-supergraph@$VARIANT" \
+            --name "${{ inputs.apollo_subgraph_name }}" \
+            --schema "$SDL_FILE"
 
       - name: CI summary
         if: always()
