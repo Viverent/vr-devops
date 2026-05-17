@@ -174,6 +174,20 @@ build_env_block() {
     out+=$'\n'"                  name: ${SECRET_PREFIX}redis_url"
   fi
 
+  if [ "$SVC" = "apollo-router" ]; then
+    out+=$'\n'"            - name: APOLLO_GRAPH_REF"
+    out+=$'\n'"              value: \"${APOLLO_GRAPH_REF}\""
+    out+=$'\n'"            - name: APOLLO_UPLINK_POLL_INTERVAL"
+    out+=$'\n'"              value: \"10s\""
+    out+=$'\n'"            - name: APOLLO_INTROSPECTION"
+    out+=$'\n'"              value: \"false\""
+    out+=$'\n'"            - name: APOLLO_KEY"
+    out+=$'\n'"              valueFrom:"
+    out+=$'\n'"                secretKeyRef:"
+    out+=$'\n'"                  key: latest"
+    out+=$'\n'"                  name: ${SECRET_PREFIX}apollo_key"
+  fi
+
   if [ "$SVC" = "identity" ]; then
     out+=$'\n'"            - name: RESEND_API_KEY"
     out+=$'\n'"              valueFrom:"
