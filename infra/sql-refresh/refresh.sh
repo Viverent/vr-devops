@@ -21,7 +21,8 @@ IFS=',' read -ra DB_LIST <<< "$DBS"
 apply_dump_to() {
   local target_db="$1"
   local source_object="$2"
-  echo "[$(date -Iseconds)] Apply to $target_db (source=$source_object)"
+  local service_user="$3"
+  echo "[$(date -Iseconds)] Apply to $target_db (source=$source_object, service_user=$service_user)"
   # drop dinamico de todos los schemas non-system para garantizar wipe completo antes del load
   psql --host="$DB_HOST" --username="$DB_USER" --dbname="$target_db" -v ON_ERROR_STOP=1 <<'SQL'
 DO $$
@@ -40,6 +41,15 @@ CREATE SCHEMA public;
 SQL
   gsutil cat "$source_object" \
     | psql --host="$DB_HOST" --username="$DB_USER" --dbname="$target_db" -v ON_ERROR_STOP=1
+  # re-grant permisos al user del servicio tras load dump (pg_dump --no-privileges los descarta)
+  psql --host="$DB_HOST" --username="$DB_USER" --dbname="$target_db" -v ON_ERROR_STOP=1 -v svc_user="$service_user" <<'SQL'
+GRANT USAGE ON SCHEMA public TO :"svc_user";
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public TO :"svc_user";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"svc_user";
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO :"svc_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"svc_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"svc_user";
+SQL
 }
 
 case "$MODE" in
@@ -55,14 +65,14 @@ case "$MODE" in
     for db in "${DB_LIST[@]}"; do
       svc=$(echo "$db" | sed 's/_db_beta$//')
       source_obj="$BUCKET/prod-full/${svc}_db_prod.sql"
-      apply_dump_to "$db" "$source_obj"
+      apply_dump_to "$db" "$source_obj" "$svc"
     done
     ;;
   apply-to-dev)
     for db in "${DB_LIST[@]}"; do
       svc=$(echo "$db" | sed 's/_db_dev$//')
       source_obj="$BUCKET/prod-full/${svc}_db_prod.sql"
-      apply_dump_to "$db" "$source_obj"
+      apply_dump_to "$db" "$source_obj" "$svc"
     done
     ;;
   *)
