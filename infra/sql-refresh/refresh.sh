@@ -53,15 +53,15 @@ case "$MODE" in
     ;;
   apply-to-beta)
     for db in "${DB_LIST[@]}"; do
-      base=$(echo "$db" | sed 's/_db_beta$//')
-      source_obj="$BUCKET/prod-full/${base}_db.sql"
+      svc=$(echo "$db" | sed 's/_db_beta$//')
+      source_obj="$BUCKET/prod-full/${svc}_db_prod.sql"
       apply_dump_to "$db" "$source_obj"
     done
     ;;
   apply-to-dev)
     for db in "${DB_LIST[@]}"; do
-      base=$(echo "$db" | sed 's/_db_dev$//')
-      source_obj="$BUCKET/prod-full/${base}_db.sql"
+      svc=$(echo "$db" | sed 's/_db_dev$//')
+      source_obj="$BUCKET/prod-full/${svc}_db_prod.sql"
       apply_dump_to "$db" "$source_obj"
     done
     ;;
