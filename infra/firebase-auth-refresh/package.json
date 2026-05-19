@@ -1,0 +1,13 @@
+{
+  "name": "firebase-auth-refresh",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "refresh.js",
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "pg": "^8.13.0",
+    "@google-cloud/secret-manager": "^5.6.0",
+    "@google-cloud/storage": "^7.13.0"
+  }
+}

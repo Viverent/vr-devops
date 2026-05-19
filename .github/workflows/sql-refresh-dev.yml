@@ -1,0 +1,49 @@
+name: SQL Refresh Dev (full prod replica)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'YES' to drop dev DB tables and re-apply prod schema+data"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "YES" ]; then
+            echo "::error::confirm must be exactly YES"; exit 1
+          fi
+
+  export-prod:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          workload_identity_provider: projects/126856503055/locations/global/workloadIdentityPools/github-pool/providers/github-actions
+          service_account: gh-actions-sql-refresh@vr-portal-fb.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - name: Execute export-prod-full job
+        run: |
+          gcloud run jobs execute sql-refresh-export-prod --region=us-central1 --project=vr-portal-fb --wait
+
+  apply-dev:
+    needs: export-prod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          workload_identity_provider: projects/248808470845/locations/global/workloadIdentityPools/github-pool/providers/github-actions
+          service_account: gh-actions-sql-refresh@vr-portal-fb-dev.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - name: Execute apply-to-dev job
+        run: |
+          gcloud run jobs execute sql-refresh-apply-dev --region=us-central1 --project=vr-portal-fb-dev --wait

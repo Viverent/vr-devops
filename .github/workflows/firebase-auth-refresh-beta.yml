@@ -1,0 +1,49 @@
+name: Firebase Auth Refresh Beta (filtered TI + backoffice)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'YES' to drop firebase beta auth and reimport filtered prod"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "YES" ]; then
+            echo "::error::confirm must be exactly YES"; exit 1
+          fi
+
+  export-prod:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          workload_identity_provider: projects/126856503055/locations/global/workloadIdentityPools/github-pool/providers/github-actions
+          service_account: gh-actions-firebase-refresh@vr-portal-fb.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - name: Execute firebase-auth-export-prod
+        run: |
+          gcloud run jobs execute firebase-auth-export-prod --region=us-central1 --project=vr-portal-fb --wait
+
+  import-beta:
+    needs: export-prod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          workload_identity_provider: projects/214382208885/locations/global/workloadIdentityPools/github-pool/providers/github-actions
+          service_account: gh-actions-firebase-refresh@vr-portal-fb-beta.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - name: Execute firebase-auth-import-beta
+        run: |
+          gcloud run jobs execute firebase-auth-import-beta --region=us-central1 --project=vr-portal-fb-beta --wait

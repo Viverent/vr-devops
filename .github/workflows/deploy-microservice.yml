@@ -1,32 +1,6 @@
-name: Deploy Microservice (Reusable)
+#Ahora si se viene el chido.
 
-# Reusable workflow para deploy de cualquier ms-*-api a Cloud Run.
-#
-# Diseno production-grade:
-#   - WIF auth via gh-actions-${env} (sin SA JSON keys).
-#   - Image naming homologo a build-image.sh (MS_IMAGE_SUFFIX from env).
-#   - Step ordering safety-first:
-#       1. Build + push image con Docker BuildKit + GHA cache (idempotent:
-#          skip si ya esta en AR).
-#       2. Render Service + Job YAMLs.
-#       3. Migrate job replace + execute (con NUEVA imagen, antes del
-#          service deploy). Si migrate falla, service queda intacto.
-#       4. Capture revision previa (justo antes de mutar el service).
-#       5. Deploy service replace.
-#       6. Smoke /health con retry loop.
-#       7. Rollback automatico si deploy succeded pero smoke fallo.
-#   - Concurrency lock per (service, env) - dos pushes a main no pisan.
-#   - Actions pinned a SHA explicito (anti supply-chain), verificadas
-#     vivas via `gh api repos/<repo>/git/refs/tags/<tag>`.
-#   - Logs verbose con identifiers resueltos para auditoria.
-#
-# Caller espera (.github/workflows/deploy-beta.yml):
-#   uses: Viverent/vr-devops/.github/workflows/deploy-microservice.yml@main
-#   with:
-#     service_name: ms-sales-api
-#     image_name: sales              # slug, sin prefijo "ms-"
-#     env: beta
-#   secrets: inherit
+name: Deploy Microservice (Reusable)
 
 on:
   workflow_call:
@@ -40,7 +14,7 @@ on:
         required: true
         type: string
       env:
-        description: "Environment target (beta solo por ahora; prod queda diferido a S12)."
+        description: "Environment target: dev | beta | prod."
         required: true
         type: string
       migrate_mode:
@@ -58,14 +32,16 @@ on:
         required: false
         type: number
         default: 30
+      apollo_subgraph_name:
+        description: "Subgraph name registrado en Apollo Studio. Si vacio, skip rover publish. Ej: ms_catalog, ms_tickets."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   id-token: write
   contents: read
 
-# Concurrency lock: dos pushes a main del mismo repo no se pisan en
-# Cloud Run replace. cancel-in-progress=false serializa los runs en
-# orden de llegada (no descarta uno por el otro).
 concurrency:
   group: deploy-${{ inputs.service_name }}-${{ inputs.env }}
   cancel-in-progress: false
@@ -73,27 +49,19 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
     timeout-minutes: 60
     steps:
-      # ── Setup ────────────────────────────────────────────────────────
-
-      # Step 1: caller repo (Dockerfile + source code).
       - name: Checkout caller repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 
 
-      # Step 2: vr-devops (templates + render-cloudrun.sh + env files).
-      # ref: main asume que vr-devops branch main tiene HEAD valido en remote.
       - name: Checkout vr-devops
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 
         with:
           repository: Viverent/vr-devops
           path: vr-devops
           ref: main
 
-      # Step 3: Resolve env-specific identifiers leyendo el env file
-      # de vr-devops (single source of truth con orchestrator).
-      # Usamos ENV_TARGET local-only para no colisionar con el `export
-      # ENV` que el env file inyecta al sourcear.
       - name: Resolve env config
         id: cfg
         run: |
@@ -106,35 +74,28 @@ jobs:
             exit 1
           fi
 
-          # Source env file: export ENV, PROJECT_ID, PROJECT_NUMBER,
-          # SVC_SUFFIX, MS_IMAGE_SUFFIX, IMAGE_BASE, AR_REPO, etc.
           # shellcheck disable=SC1090
           source "vr-devops/infra/env/${ENV_TARGET}.env"
 
           GIT_SHA=$(git rev-parse --short=7 HEAD)
 
-          # Naming homologo a build-image.sh:
-          #   beta: ms-sales (MS_IMAGE_SUFFIX="")
-          #   prod: ms-sales-api (MS_IMAGE_SUFFIX="-api")
           IMAGE_REPO="ms-${SLUG}${MS_IMAGE_SUFFIX}"
           IMAGE_TAG="${IMAGE_BASE}/${IMAGE_REPO}:sha-${GIT_SHA}"
 
-          # Service real con sufijo (ms-sales-api-beta).
-          # SVC_SUFFIX viene del env file (-beta o -prod).
           FULL_SVC="${{ inputs.service_name }}${SVC_SUFFIX}"
-
-          # Job name canonico per S05 conventions.
           JOB_NAME="ms-${SLUG}-migrate${SVC_SUFFIX}"
 
-          # WIF SA email per env (S08 setup).
           if [ "$ENV_TARGET" = "prod" ]; then
             SA_EMAIL="gh-actions-prod@vr-portal-fb.iam.gserviceaccount.com"
             POOL_PROJ_NUM="126856503055"
           elif [ "$ENV_TARGET" = "beta" ]; then
             SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
             POOL_PROJ_NUM="214382208885"
+          elif [ "$ENV_TARGET" = "dev" ]; then
+            SA_EMAIL="gh-actions-dev@vr-portal-fb-dev.iam.gserviceaccount.com"
+            POOL_PROJ_NUM="248808470845"
           else
-            echo "::error::Unsupported env: $ENV_TARGET (only beta|prod)"
+            echo "::error::Unsupported env: $ENV_TARGET (only dev|beta|prod)"
             exit 1
           fi
 
@@ -161,28 +122,20 @@ jobs:
           echo "  sa=$SA_EMAIL"
           echo "  git_sha=$GIT_SHA"
 
-      # Step 4: WIF auth -> impersonate gh-actions-${env}.
       - name: Authenticate to GCP via WIF
-        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed 
         with:
           workload_identity_provider: projects/${{ steps.cfg.outputs.pool_project_number }}/locations/global/workloadIdentityPools/github-pool/providers/github-actions
           service_account: ${{ steps.cfg.outputs.service_account }}
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f 
         with:
           project_id: ${{ steps.cfg.outputs.project_id }}
 
-      # Step 5: Configure Docker para push a Artifact Registry. Esto
-      # configura ~/.docker/config.json con gcloud como credential
-      # helper, lo cual buildx usa transparentemente via daemon.
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      # ── Build + Render (sin mutar Cloud Run todavia) ─────────────────
-
-      # Step 6: Verifica si la imagen ya esta en AR (idempotencia para
-      # re-run del mismo commit). Si existe, skip rebuild en step 8.
       - name: Check image existence in AR
         id: image_check
         run: |
@@ -198,17 +151,10 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Step 7: Setup Docker Buildx con GHA layer cache. Acelera builds
-      # consecutivos cacheando capas Docker en el cache de GitHub Actions.
-      # Solo se ejecuta si el step 6 indica que hay que rebuildear.
       - name: Set up Docker Buildx
         if: steps.image_check.outputs.exists == 'false'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      # Step 8: Build + push con buildx. cache-from/cache-to type=gha
-      # con scope per (image_name, env) para evitar contaminacion entre
-      # repos. mode=max guarda capas intermedias (mas espacio cache, mas
-      # velocidad en runs siguientes).
       - name: Build and push Docker image (with GHA cache)
         if: steps.image_check.outputs.exists == 'false'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -220,15 +166,12 @@ jobs:
           cache-from: type=gha,scope=${{ inputs.image_name }}-${{ inputs.env }}
           cache-to: type=gha,scope=${{ inputs.image_name }}-${{ inputs.env }},mode=max
 
-      # Step 9: Escribe el image marker que render-cloudrun.sh lee.
-      # Siempre corre, independiente de si rebuildemos o reusamos AR.
       - name: Write image marker for render
         run: |
           set -euo pipefail
           mkdir -p /tmp
           echo "${{ steps.cfg.outputs.image_tag }}" > "/tmp/last-image-${{ inputs.image_name }}-${{ inputs.env }}.txt"
 
-      # Step 10: Render Service YAML (subgraph.template.yaml).
       - name: Render Cloud Run Service YAML
         id: render-service
         run: |
@@ -240,7 +183,6 @@ jobs:
           cat "$OUT"
           echo "::endgroup::"
 
-      # Step 11: Render Job YAML (job.template.yaml). Skip si mode=never.
       - name: Render Cloud Run Job YAML (migrate)
         id: render-job
         if: inputs.migrate_mode != 'never'
@@ -253,14 +195,6 @@ jobs:
           cat "$OUT"
           echo "::endgroup::"
 
-      # ── Apply: migrate first, then service, then validate ──────────
-
-      # Step 12: Migrate job replace + execute (BEFORE service deploy).
-      # Razon: si migrate falla, el service queda en su revision actual
-      # con el schema que esperaba; no entra codigo nuevo a un schema
-      # potencialmente roto. Las migrations alembic son forward-only
-      # additive (per S03 conventions), por lo que ejecutarlas antes
-      # del deploy garantiza que la nueva revision tenga schema listo.
       - name: Migrate job replace + execute (mode=${{ inputs.migrate_mode }})
         id: migrate
         timeout-minutes: ${{ inputs.migrate_timeout_minutes }}
@@ -316,9 +250,6 @@ jobs:
               ;;
           esac
 
-      # Step 13: Capture revision previa para rollback. Se hace JUSTO
-      # antes del deploy del service para que el snapshot represente lo
-      # que hay realmente corriendo en runtime al momento de la mutacion.
       - name: Capture previous service revision (for rollback)
         id: prev_rev
         run: |
@@ -336,8 +267,6 @@ jobs:
             echo "::notice::Previous ready revision captured for rollback: $PREV"
           fi
 
-      # Step 14: Deploy Cloud Run service. Cloud Run mantiene revisiones
-      # previas en historial (no las borra) - habilitando rollback.
       - name: Deploy Cloud Run service
         id: deploy
         run: |
@@ -347,21 +276,6 @@ jobs:
             --region=us-central1 \
             --project="${{ steps.cfg.outputs.project_id }}"
 
-      # Step 15: Smoke universal via gcloud revision health check.
-      #
-      # Razon: subgrafos ms-* corren con ingress=internal. El GitHub
-      # Actions runner es externo a GCP VPC y recibe 404 de GFE en
-      # cualquier curl HTTP a ingress=internal. Por tanto curl /health
-      # NO es una validacion fiable (falsos negativos).
-      #
-      # En su lugar verificamos:
-      #   1. Revision marcada como Ready=True (deploy completo)
-      #   2. ContainerHealthy=True (startup probe OK)
-      #   3. Active=True (recibiendo traffic)
-      #
-      # Adicionalmente, si el service tiene ingress=all (tickets,
-      # auth-validator), hacemos HTTP curl complementario (best-effort).
-      # Para ingress=internal el HTTP curl se salta con notice.
       - name: Smoke deploy health
         id: smoke
         run: |
@@ -371,7 +285,6 @@ jobs:
           MAX_TRIES=$(( ${{ inputs.smoke_timeout_seconds }} / 5 ))
           if [ "$MAX_TRIES" -lt 1 ]; then MAX_TRIES=1; fi
 
-          # 1. gcloud revision health (universal, funciona para cualquier ingress)
           echo "::notice::Validating latest revision health via gcloud (max $MAX_TRIES x 5s)"
           for i in $(seq 1 "$MAX_TRIES"); do
             REV=$(gcloud run services describe "$SVC" \
@@ -384,20 +297,10 @@ jobs:
               continue
             fi
 
-            # Check revision conditions: Ready + ContainerHealthy + Active.
-            # Output JSON via --format=json para parseo robusto con jq
-            # (value() returns Python-dict-like serializado que es fragil
-            # de grep'ear).
             STATUS_JSON=$(gcloud run revisions describe "$REV" \
               --region=us-central1 --project="$PROJECT" \
               --format=json)
 
-            # Ready + ContainerHealthy son la evidencia autoritativa de
-            # deploy exitoso. NO chequeamos 'Active' porque tiene delay
-            # post-services replace (puede estar False varios segundos
-            # mientras Cloud Run propaga traffic al nuevo revision).
-            # Active=False post-rollback ademas es esperado y no indica
-            # falla del deploy original.
             READY=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="Ready") | .status')
             CONTAINER_HEALTHY=$(echo "$STATUS_JSON" | jq -r '.status.conditions[]? | select(.type=="ContainerHealthy") | .status')
 
@@ -418,7 +321,6 @@ jobs:
             sleep 5
           done
 
-          # 2. HTTP /health curl SOLO si ingress=all (best-effort).
           INGRESS=$(gcloud run services describe "$SVC" \
             --region=us-central1 --project="$PROJECT" \
             --format='value(metadata.annotations[run.googleapis.com/ingress])')
@@ -447,11 +349,51 @@ jobs:
             echo "::notice::Service ingress=$INGRESS - skipping external HTTP smoke (not reachable from runner)"
           fi
 
-      # Step 16: Rollback service si deploy succeeded pero smoke fallo.
-      # NO se rolla DB: las migrations son forward-only por convencion
-      # y la revision previa del service es backward-compat con schema
-      # nuevo (additive migrations). La revision rota queda en historial
-      # pero NO recibe trafico - investigar antes de re-deploy.
+      - name: Rover subgraph publish
+        if: inputs.apollo_subgraph_name != '' && steps.smoke.conclusion == 'success'
+        env:
+          APOLLO_SECRET_NAME: ${{ inputs.env == 'prod' && 'prod_apollo_key' || format('{0}_apollo_key', inputs.env) }}
+          APOLLO_VARIANT: ${{ inputs.env == 'prod' && 'main' || inputs.env }}
+          SVC: ${{ steps.cfg.outputs.full_svc }}
+          PROJECT_ID: ${{ steps.cfg.outputs.project_id }}
+        run: |
+          set -euo pipefail
+
+          curl -sSL https://rover.apollo.dev/nix/v0.38.1 | sh
+          export PATH="$HOME/.rover/bin:$PATH"
+
+          APOLLO_KEY_VALUE=$(gcloud secrets versions access latest \
+            --secret="$APOLLO_SECRET_NAME" \
+            --project="$PROJECT_ID")
+
+          ORIG_INGRESS=$(gcloud run services describe "$SVC" \
+            --region=us-central1 --project="$PROJECT_ID" \
+            --format='value(metadata.annotations[run.googleapis.com/ingress])')
+
+          SVC_URL=$(gcloud run services describe "$SVC" \
+            --region=us-central1 --project="$PROJECT_ID" \
+            --format='value(status.url)')
+
+          SDL_FILE=/tmp/${{ inputs.apollo_subgraph_name }}.graphql
+
+          if [ "$ORIG_INGRESS" != "all" ]; then
+            # toggle ingress=all temporal para fetch SDL desde runner externo
+            echo "::notice::Toggle ingress=all temporal en $SVC para SDL fetch"
+            gcloud run services update "$SVC" \
+              --region=us-central1 --project="$PROJECT_ID" \
+              --ingress=all --quiet >/dev/null
+            sleep 15
+            trap "gcloud run services update '$SVC' --region=us-central1 --project='$PROJECT_ID' --ingress='$ORIG_INGRESS' --quiet >/dev/null; echo '::notice::ingress restaurado a $ORIG_INGRESS'" EXIT
+          fi
+
+          curl -sSf "$SVC_URL/internal/schema" -o "$SDL_FILE"
+
+          APOLLO_KEY="$APOLLO_KEY_VALUE" rover subgraph publish "viverent-supergraph@$APOLLO_VARIANT" \
+            --name "${{ inputs.apollo_subgraph_name }}" \
+            --routing-url "$SVC_URL/graphql" \
+            --schema "$SDL_FILE" \
+            --convert
+
       - name: Rollback to previous revision (smoke failed)
         if: failure() && steps.deploy.conclusion == 'success' && steps.smoke.conclusion == 'failure' && steps.prev_rev.outputs.rev != ''
         run: |
@@ -465,7 +407,6 @@ jobs:
             --project="${{ steps.cfg.outputs.project_id }}"
           echo "::warning::Rollback complete. Investigate failed revision before retry."
 
-      # Step 17: Audit summary visible en GitHub Actions UI.
       - name: Deploy summary
         if: always()
         run: |
