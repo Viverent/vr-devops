@@ -124,7 +124,16 @@ build_env_block() {
       out+=$'\n'"            - name: ATTACHMENT_BUCKET"$'\n'"              value: \"${ATTACHMENT_BUCKET}\""
       out+=$'\n'"            - name: MS_IDENTITY_URL"$'\n'"              value: \"${MS_IDENTITY_URL:-}\""
       out+=$'\n'"            - name: MS_CONTRACTS_URL"$'\n'"              value: \"${MS_CONTRACTS_URL:-}\""
+      out+=$'\n'"            - name: MS_PERSONS_URL"$'\n'"              value: \"${MS_PERSONS_URL:-}\""
+      # ms-tickets es el unico subgrafo con ingress=all (SSE necesita
+      # llamada directa desde browser sin pasar por router/auth-validator);
+      # por eso CORS_ORIGINS aplica solo aqui dentro de los subgrafos.
       out+=$'\n'"            - name: CORS_ORIGINS"$'\n'"              value: \"${CORS_ORIGINS}\""
+      out+=$'\n'"            - name: RESEND_API_KEY"
+      out+=$'\n'"              valueFrom:"
+      out+=$'\n'"                secretKeyRef:"
+      out+=$'\n'"                  key: latest"
+      out+=$'\n'"                  name: ${SECRET_PREFIX}resend_api_key"
       ;;
     auth-validator)
       out+=$'\n'"            - name: APOLLO_ROUTER_URL"$'\n'"              value: \"${APOLLO_ROUTER_URL:-}/graphql\""
