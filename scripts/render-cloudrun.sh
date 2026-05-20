@@ -122,6 +122,8 @@ build_env_block() {
   case "$SVC" in
     persons)
       out+=$'\n'"            - name: GCS_DOCUMENTS_BUCKET"$'\n'"              value: \"${GCS_DOCUMENTS_BUCKET}\""
+      out+=$'\n'"            - name: MS_CORE_URL"$'\n'"              value: \"${MS_CORE_URL:-}\""
+      out+=$'\n'"            - name: MS_IDENTITY_URL"$'\n'"              value: \"${MS_IDENTITY_URL:-}\""
       ;;
     tickets)
       out+=$'\n'"            - name: ATTACHMENT_BUCKET"$'\n'"              value: \"${ATTACHMENT_BUCKET}\""
