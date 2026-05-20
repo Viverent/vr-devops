@@ -74,6 +74,9 @@ case "$SVC" in
   identity)
     export MIN_SCALE="${IDENTITY_MIN_SCALE:-0}"
   ;;
+  persons)
+    export MIN_SCALE="${PERSONS_MIN_SCALE:-0}"
+  ;;
 esac
 
 case "$SVC" in
