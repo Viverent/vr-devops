@@ -70,6 +70,12 @@ case "$SVC" in
     export INGRESS="internal"
     export VPC_EGRESS="$ROUTER_VPC_EGRESS"
     export MIN_SCALE="${ROUTER_MIN_SCALE:-0}"
+    # Sprint 1 hotfix (2026-05-28) — override memoria + CPU del router.
+    # Parsing de bodies grandes (uploads de attachments base64) con 512Mi
+    # provocaba OOM/restart bajo carga (502/503 "malformed response"). Bump
+    # vía ROUTER_MEMORY / ROUTER_CPU en cada env file. Fallback al DEFAULT.
+    export MEMORY="${ROUTER_MEMORY:-$DEFAULT_MEMORY}"
+    export CPU="${ROUTER_CPU:-$DEFAULT_CPU}"
     ;;
   identity)
     export MIN_SCALE="${IDENTITY_MIN_SCALE:-0}"
