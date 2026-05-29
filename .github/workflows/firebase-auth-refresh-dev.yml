@@ -30,7 +30,7 @@ jobs:
         with:
           workload_identity_provider: projects/126856503055/locations/global/workloadIdentityPools/github-pool/providers/github-actions
           service_account: gh-actions-firebase-refresh@vr-portal-fb.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
       - name: Execute firebase-auth-export-prod
         run: |
           gcloud run jobs execute firebase-auth-export-prod --region=us-central1 --project=vr-portal-fb --wait
@@ -43,7 +43,7 @@ jobs:
         with:
           workload_identity_provider: projects/248808470845/locations/global/workloadIdentityPools/github-pool/providers/github-actions
           service_account: gh-actions-firebase-refresh@vr-portal-fb-dev.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
       - name: Execute firebase-auth-import-dev
         run: |
           gcloud run jobs execute firebase-auth-import-dev --region=us-central1 --project=vr-portal-fb-dev --wait
