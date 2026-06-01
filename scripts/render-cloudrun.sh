@@ -158,6 +158,18 @@ build_env_block() {
       ;;
   esac
 
+  # STAGING_DATABASE_URL: solo persons y finance leen la BD staging dedicada
+  # de solicitudes de cambio (change_requests), por env desde Secret Manager.
+  case "$SVC" in
+    persons|finance)
+      out+=$'\n'"            - name: STAGING_DATABASE_URL"
+      out+=$'\n'"              valueFrom:"
+      out+=$'\n'"                secretKeyRef:"
+      out+=$'\n'"                  key: latest"
+      out+=$'\n'"                  name: ${SECRET_PREFIX}change_requests_database_url"
+      ;;
+  esac
+
   if [ "$SVC" != "auth-validator" ] && [ "$SVC" != "apollo-router" ]; then
     out+=$'\n'"            - name: DATABASE_URL"
     out+=$'\n'"              valueFrom:"
