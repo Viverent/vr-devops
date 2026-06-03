@@ -163,13 +163,17 @@ build_env_block() {
 
   # STAGING_DATABASE_URL: solo persons y finance leen la BD staging dedicada
   # de solicitudes de cambio (change_requests), por env desde Secret Manager.
+  # Gateado por STAGING_DB_ENABLED (default true): beta lo apaga hasta
+  # provisionar la instancia/secreto de change_requests.
   case "$SVC" in
     persons|finance)
-      out+=$'\n'"            - name: STAGING_DATABASE_URL"
-      out+=$'\n'"              valueFrom:"
-      out+=$'\n'"                secretKeyRef:"
-      out+=$'\n'"                  key: latest"
-      out+=$'\n'"                  name: ${SECRET_PREFIX}change_requests_database_url"
+      if [ "${STAGING_DB_ENABLED:-true}" = "true" ]; then
+        out+=$'\n'"            - name: STAGING_DATABASE_URL"
+        out+=$'\n'"              valueFrom:"
+        out+=$'\n'"                secretKeyRef:"
+        out+=$'\n'"                  key: latest"
+        out+=$'\n'"                  name: ${SECRET_PREFIX}change_requests_database_url"
+      fi
       ;;
   esac
 
