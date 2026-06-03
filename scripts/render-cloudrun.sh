@@ -82,6 +82,9 @@ case "$SVC" in
   ;;
   persons)
     export MIN_SCALE="${PERSONS_MIN_SCALE:-0}"
+    # all-traffic: ms-persons resuelve el operador contra ms-identity
+    # (ingress=internal) en el alta on-behalf; private-ranges-only daba 404.
+    export VPC_EGRESS="all-traffic"
   ;;
 esac
 
