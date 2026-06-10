@@ -82,8 +82,8 @@ automático** si smoke falla.
 
 | Input | Type | Default | Descripción |
 |-------|------|---------|-------------|
-| `service_name` | string | requerido | Cloud Run service base. Ej: `ms-sales-api`. |
-| `image_name` | string | requerido | Slug subgrafo (sin prefijo `ms-`). Ej: `sales`. |
+| `service_name` | string | requerido | Cloud Run service base. Ej: `ms-rentals-api`. |
+| `image_name` | string | requerido | Slug subgrafo (sin prefijo `ms-`). Ej: `rentals`. |
 | `env` | string | requerido | Target environment (`beta` o `prod`). |
 | `migrate_mode` | string | `auto` | `auto` \| `always` \| `never`. |
 | `smoke_timeout_seconds` | number | `60` | Tiempo total /health smoke. |
@@ -92,7 +92,7 @@ automático** si smoke falla.
 #### Caller ejemplo
 
 ```yaml
-# ms-sales-api/.github/workflows/deploy-beta.yml
+# ms-rentals-api/.github/workflows/deploy-beta.yml
 name: Deploy Beta
 on:
   push:
@@ -102,8 +102,8 @@ jobs:
   deploy:
     uses: Viverent/vr-devops/.github/workflows/deploy-microservice.yml@main
     with:
-      service_name: ms-sales-api
-      image_name: sales
+      service_name: ms-rentals-api
+      image_name: rentals
       env: beta
     secrets: inherit
 ```
@@ -130,7 +130,7 @@ opcionales + pytest. Sin deploy.
 #### Caller ejemplo (con migrations + extensions)
 
 ```yaml
-# ms-sales-api/.github/workflows/ci.yml
+# ms-rentals-api/.github/workflows/ci.yml
 name: CI
 on:
   pull_request:
@@ -360,6 +360,9 @@ Bindings:
 
 ## Tier rollout (S09)
 
+> Nota: `ms-catalog-api`, `ms-sales-api` y `ms-collections-api` fueron dados de
+> baja y deprecados. La tabla siguiente queda como registro histórico del rollout.
+
 Estrategia escalonada para limitar blast radius:
 
 | Tier | Repos | Reusables aplicables | Status |
@@ -413,7 +416,7 @@ Estrategia: soft enforcement (ver "Soft enforcement strategy" en Decisiones docu
 
 ```bash
 # Batch via API (correr cuando creen el repo)
-for r in vr-devops ms-sales-api ms-rentals-api ms-collections-api; do
+for r in vr-devops ms-rentals-api ms-tickets-api; do
   # General settings
   gh api -X PATCH "repos/Viverent/$r" \
     -F allow_auto_merge=true \

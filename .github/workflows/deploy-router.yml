@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       env:
-        description: "Environment target: dev | beta | prod."
+        description: "Environment target: beta | prod."
         required: true
         type: string
       router_image_name:
@@ -68,11 +68,8 @@ jobs:
           elif [ "$ENV_TARGET" = "beta" ]; then
             SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
             POOL_PROJ_NUM="214382208885"
-          elif [ "$ENV_TARGET" = "dev" ]; then
-            SA_EMAIL="gh-actions-dev@vr-portal-fb-dev.iam.gserviceaccount.com"
-            POOL_PROJ_NUM="248808470845"
           else
-            echo "::error::Unsupported env: $ENV_TARGET (only dev|beta|prod)"
+            echo "::error::Unsupported env: $ENV_TARGET (only beta|prod)"
             exit 1
           fi
 
