@@ -123,7 +123,7 @@ build_env_block() {
   out+=$'\n'"            - name: DB_POOL_MAX_OVERFLOW"$'\n'"              value: \"${DEFAULT_DB_POOL_MAX_OVERFLOW}\""
 
   case "$SVC" in
-    catalog|contracts|identity|persons|rentals|sales|tickets)
+    contracts|identity|persons|rentals|tickets)
       out+=$'\n'"            - name: PUBSUB_AUDIT_TOPIC"$'\n'"              value: \"${PUBSUB_AUDIT_TOPIC}\""
       ;;
   esac

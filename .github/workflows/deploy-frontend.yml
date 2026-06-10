@@ -4,11 +4,11 @@ on:
   workflow_call:
     inputs:
       hosting_target:
-        description: "Firebase Hosting target name (ej. auth-beta, backoffice-beta, investor-beta, auth-dev)."
+        description: "Firebase Hosting target name (ej. auth-beta, backoffice-beta, investor-beta)."
         required: true
         type: string
       env:
-        description: "Environment target: dev | beta | prod."
+        description: "Environment target: beta | prod."
         required: true
         type: string
       working_directory:
@@ -67,12 +67,8 @@ jobs:
             PROJECT_ID="vr-portal-fb-beta"
             POOL_PROJ_NUM="214382208885"
             SA_EMAIL="gh-actions-beta@vr-portal-fb-beta.iam.gserviceaccount.com"
-          elif [ "$ENV_TARGET" = "dev" ]; then
-            PROJECT_ID="vr-portal-fb-dev"
-            POOL_PROJ_NUM="248808470845"
-            SA_EMAIL="gh-actions-dev@vr-portal-fb-dev.iam.gserviceaccount.com"
           else
-            echo "::error::Unsupported env: $ENV_TARGET (only dev|beta|prod)"
+            echo "::error::Unsupported env: $ENV_TARGET (only beta|prod)"
             exit 1
           fi
 
