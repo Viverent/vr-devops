@@ -220,6 +220,8 @@ build_env_block() {
     out+=$'\n'"              value: \"10s\""
     out+=$'\n'"            - name: APOLLO_INTROSPECTION"
     out+=$'\n'"              value: \"false\""
+    out+=$'\n'"            - name: APOLLO_INCLUDE_SUBGRAPH_ERRORS"
+    out+=$'\n'"              value: \"${APOLLO_INCLUDE_SUBGRAPH_ERRORS:-false}\""
     out+=$'\n'"            - name: APOLLO_KEY"
     out+=$'\n'"              valueFrom:"
     out+=$'\n'"                secretKeyRef:"
