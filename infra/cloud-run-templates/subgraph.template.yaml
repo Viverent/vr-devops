@@ -12,8 +12,7 @@ spec:
       annotations:
 ${MIN_SCALE_ANNOT}
         autoscaling.knative.dev/maxScale: "${MAX_SCALE}"
-        run.googleapis.com/vpc-access-connector: ${VPC_CONNECTOR}
-        run.googleapis.com/vpc-access-egress: ${VPC_EGRESS}
+${VPC_ANNOTATION_BLOCK}
         run.googleapis.com/startup-cpu-boost: "true"
         run.googleapis.com/cpu-throttling: "${CPU_THROTTLING}"
         run.googleapis.com/execution-environment: gen2
