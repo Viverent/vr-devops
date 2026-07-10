@@ -8,8 +8,7 @@ spec:
     metadata:
       annotations:
         run.googleapis.com/execution-environment: gen2
-        run.googleapis.com/vpc-access-connector: ${VPC_CONNECTOR}
-        run.googleapis.com/vpc-access-egress: ${VPC_EGRESS}
+${VPC_ANNOTATION_BLOCK}
     spec:
       taskCount: 1
       template:

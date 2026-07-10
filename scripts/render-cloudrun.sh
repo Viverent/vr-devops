@@ -273,6 +273,18 @@ else
   export MIN_SCALE_ANNOT="        autoscaling.knative.dev/minScale: \"${MIN_SCALE}\""
 fi
 
+# Anotacion de red del VPC. Si el env define VPC_SUBNET (beta, tras retirar el
+# connector en la optimizacion de costos 2026-07) se usa Direct VPC egress via
+# network-interfaces apuntando a la subred; de lo contrario (prod/dev) se
+# mantiene el vpc-access-connector. El vpc-access-egress aplica en ambos modos.
+if [ -n "${VPC_SUBNET:-}" ]; then
+  export VPC_ANNOTATION_BLOCK="        run.googleapis.com/network-interfaces: '[{\"network\":\"${VPC_NAME}\",\"subnetwork\":\"${VPC_SUBNET}\"}]'
+        run.googleapis.com/vpc-access-egress: ${VPC_EGRESS}"
+else
+  export VPC_ANNOTATION_BLOCK="        run.googleapis.com/vpc-access-connector: ${VPC_CONNECTOR}
+        run.googleapis.com/vpc-access-egress: ${VPC_EGRESS}"
+fi
+
 ENV_BLOCK_RAW="$(build_env_block)"
 if [ "$MODE" = "job" ]; then
   export ENV_BLOCK="$(echo "$ENV_BLOCK_RAW" | sed 's/^/    /')"
