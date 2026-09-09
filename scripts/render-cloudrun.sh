@@ -148,6 +148,19 @@ build_env_block() {
       out+=$'\n'"                secretKeyRef:"
       out+=$'\n'"                  key: latest"
       out+=$'\n'"                  name: ${SECRET_PREFIX}resend_api_key"
+      # Permisos abiertos para staff: dentro del backoffice todo
+      # colaborador puede operar cualquier ticket, cerrar cualquier hilo de
+      # area y crear tickets desde cualquier area. NO relaja el aislamiento
+      # del inversionista: el guarda de ms-tickets exige que el caller no
+      # traiga person_id de inversionista.
+      #
+      # Debe ir a la par de VITE_OPEN_STAFF_PERMISSIONS en
+      # portal-tickets-ui/frontend/.env.<env>. Si solo se enciende una, la
+      # interfaz ofrece acciones que la API rechaza con 403, o al reves.
+      #
+      # Default false: un env file sin la variable deja el comportamiento
+      # historico.
+      out+=$'\n'"            - name: OPEN_STAFF_PERMISSIONS"$'\n'"              value: \"${TICKETS_OPEN_STAFF_PERMISSIONS:-false}\""
       ;;
     auth-validator)
       out+=$'\n'"            - name: APOLLO_ROUTER_URL"$'\n'"              value: \"${APOLLO_ROUTER_URL:-}/graphql\""
