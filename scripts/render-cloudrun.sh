@@ -161,6 +161,37 @@ build_env_block() {
       # Default false: un env file sin la variable deja el comportamiento
       # historico.
       out+=$'\n'"            - name: OPEN_STAFF_PERMISSIONS"$'\n'"              value: \"${TICKETS_OPEN_STAFF_PERMISSIONS:-false}\""
+      # Avisos internos por WhatsApp (Twilio) al colaborador cuando se le
+      # asigna un ticket o se le levanta una solicitud. Solo staff; el
+      # inversionista nunca recibe WhatsApp por esta via.
+      #
+      # El interruptor va aparte de las credenciales para poder apagar los
+      # avisos sin borrar la configuracion. Default false: un env file sin
+      # la variable deja el comportamiento historico.
+      out+=$'\n'"            - name: WHATSAPP_NOTIFICATIONS_ENABLED"$'\n'"              value: \"${TICKETS_WHATSAPP_ENABLED:-false}\""
+      out+=$'\n'"            - name: TWILIO_WHATSAPP_NUMBER"
+      out+=$'\n'"              valueFrom:"
+      out+=$'\n'"                secretKeyRef:"
+      out+=$'\n'"                  key: latest"
+      out+=$'\n'"                  name: ${SECRET_PREFIX}twilio_whatsapp_number"
+      out+=$'\n'"            - name: TWILIO_ACCOUNT_SID"
+      out+=$'\n'"              valueFrom:"
+      out+=$'\n'"                secretKeyRef:"
+      out+=$'\n'"                  key: latest"
+      out+=$'\n'"                  name: ${SECRET_PREFIX}twilio_account_sid"
+      out+=$'\n'"            - name: TWILIO_AUTH_TOKEN"
+      out+=$'\n'"              valueFrom:"
+      out+=$'\n'"                secretKeyRef:"
+      out+=$'\n'"                  key: latest"
+      out+=$'\n'"                  name: ${SECRET_PREFIX}twilio_auth_token"
+      # SIDs de plantillas aprobadas por Meta. Vacios = texto libre, que
+      # WhatsApp solo entrega dentro de la ventana de 24 h.
+      out+=$'\n'"            - name: TWILIO_TEMPLATE_SID_ASIGNACION"$'\n'"              value: \"${TICKETS_TWILIO_TEMPLATE_ASIGNACION:-}\""
+      out+=$'\n'"            - name: TWILIO_TEMPLATE_SID_SOLICITUD"$'\n'"              value: \"${TICKETS_TWILIO_TEMPLATE_SOLICITUD:-}\""
+      # Raiz del backoffice: arma el enlace directo al ticket que viaja en
+      # el aviso de WhatsApp. El destinatario es staff, no inversionista,
+      # asi que NO es PORTAL_URL.
+      out+=$'\n'"            - name: BACKOFFICE_URL"$'\n'"              value: \"${BACKOFFICE_URL:-}\""
       ;;
     auth-validator)
       out+=$'\n'"            - name: APOLLO_ROUTER_URL"$'\n'"              value: \"${APOLLO_ROUTER_URL:-}/graphql\""
